@@ -154,7 +154,8 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
                 Findings: allFindings,
                 RawLlmOutput: rawOutputBuilder.ToString(),
                 ContextTokens: context.EstimatedTokens,
-                Duration: sw.Elapsed
+                Duration: sw.Elapsed,
+                WorkspaceId: request.WorkspaceId
             );
             _store.Save(result);
 

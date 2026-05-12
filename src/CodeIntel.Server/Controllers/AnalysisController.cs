@@ -31,8 +31,9 @@ public class AnalysisController : ControllerBase
     [HttpGet("status")]
     public IActionResult GetStatus() => Ok(new
     {
-        llmReady = _llm.IsReady,
-        modelName = _llm.ModelName
+        llmReady    = _llm.IsReady,
+        modelName   = _llm.ModelName,
+        backendName = _llm.BackendName
     });
 
     [HttpPost("run")]

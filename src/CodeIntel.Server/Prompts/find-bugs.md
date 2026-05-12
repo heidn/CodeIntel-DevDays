@@ -1,4 +1,4 @@
-﻿Analyze the code below for bugs and potential runtime failures.
+Analyze the code below for bugs and potential runtime failures.
 
 For each issue, emit a <finding> with severity "bug" (confirmed defect) or "warning"
 (probable risk). Focus on:

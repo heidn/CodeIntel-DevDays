@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { Workspace } from '../types';
+import type { Workspace, DefinitionLocation } from '../types';
 
 export async function loadSolution(path: string): Promise<Workspace> {
   const { data } = await apiClient.post<Workspace>('/workspace/load', { path });
@@ -29,4 +29,20 @@ export interface BrowseResult {
 export async function browseFolder(path?: string): Promise<BrowseResult> {
   const { data } = await apiClient.get<BrowseResult>('/workspace/browse', { params: path ? { path } : {} });
   return data;
+}
+
+export async function getDefinition(
+  workspaceId: string,
+  file: string,
+  line: number,
+  character: number,
+): Promise<DefinitionLocation | null> {
+  try {
+    const { data } = await apiClient.get<DefinitionLocation>(`/workspace/${workspaceId}/definition`, {
+      params: { file, line, character },
+    });
+    return data;
+  } catch {
+    return null;
+  }
 }

@@ -14,7 +14,10 @@
   <ItemGroup>
     <!-- LLM inference -->
     <PackageReference Include="LLamaSharp" Version="0.27.0" />
-    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu"    Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Vulkan" Version="0.27.0" />
+    <!-- CUDA: uncomment + remove Vulkan when an NVIDIA GPU is present -->
+    <!-- <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" /> -->
 
     <!-- Roslyn for C# code analysis -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />

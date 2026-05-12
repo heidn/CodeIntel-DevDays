@@ -1,0 +1,17 @@
+[
+  {
+    "filename": "2026-05-12-find-bugs-fbd4c3c8.md",
+    "completedAt": "2026-05-12T18:40:04.3523763Z",
+    "mode": "Preset",
+    "presetKey": "find-bugs",
+    "filesAnalyzed": [
+      "src\\CodeIntel.Server\\Controllers\\ReportsController.cs",
+      "src\\CodeIntel.Server\\Services\\AnalysisCancellationRegistry.cs",
+      "src\\CodeIntel.Server\\Services\\InvestigationOrchestrator.cs",
+      "src\\CodeIntel.Server\\Services\\ReportWriter.cs"
+    ],
+    "findingCount": 5,
+    "highSeverityCount": 1,
+    "durationSeconds": 239.4606854
+  }
+]

@@ -13,6 +13,7 @@ public interface ILlmService
 {
     bool IsReady { get; }
     string ModelName { get; }
+    string BackendName { get; }
     Task InitializeAsync(CancellationToken ct = default);
     IAsyncEnumerable<string> StreamAsync(string prompt, CancellationToken ct = default);
 }
@@ -20,6 +21,7 @@ public interface ILlmService
 /// <summary>
 /// Singleton service hosting one loaded GGUF model.
 /// Inference is serialized via a semaphore - LLamaSharp contexts are not thread-safe.
+/// On startup, attempts to use the most powerful available compute (Vulkan → CPU).
 /// </summary>
 public sealed class LlamaSharpService : ILlmService, IDisposable
 {
@@ -31,17 +33,19 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
     private LLamaWeights? _weights;
     private LLamaContext? _context;
     private StatelessExecutor? _executor;
-    private string _modelName = "(not loaded)";
+    private string _modelName   = "(not loaded)";
+    private string _backendName = "cpu";
     private bool _isReady;
 
-    public bool IsReady => _isReady;
-    public string ModelName => _modelName;
+    public bool IsReady      => _isReady;
+    public string ModelName  => _modelName;
+    public string BackendName => _backendName;
 
     public LlamaSharpService(IOptions<LlmOptions> options, IWebHostEnvironment env, ILogger<LlamaSharpService> logger)
     {
-        _options = options.Value;
+        _options     = options.Value;
         _contentRoot = env.ContentRootPath;
-        _logger = logger;
+        _logger      = logger;
     }
 
     public async Task InitializeAsync(CancellationToken ct = default)
@@ -62,19 +66,16 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
         await Task.Run(() =>
         {
             _logger.LogInformation("Loading model from {Path}", modelPath);
-            var parameters = new ModelParams(modelPath)
-            {
-                ContextSize = (uint)_options.ContextSize,
-                GpuLayerCount = _options.GpuLayerCount,
-                Threads = _options.Threads
-            };
 
-            _weights = LLamaWeights.LoadFromFile(parameters);
-            _context = _weights.CreateContext(parameters);
-            _executor = new StatelessExecutor(_weights, parameters);
-            _modelName = Path.GetFileNameWithoutExtension(modelPath);
-            _isReady = true;
-            _logger.LogInformation("Model loaded: {Name}", _modelName);
+            var (parameters, backendName) = ResolveBackend(modelPath);
+
+            _weights     = LLamaWeights.LoadFromFile(parameters);
+            _context     = _weights.CreateContext(parameters);
+            _executor    = new StatelessExecutor(_weights, parameters);
+            _modelName   = Path.GetFileNameWithoutExtension(modelPath);
+            _backendName = backendName;
+            _isReady     = true;
+            _logger.LogInformation("Model loaded: {Name} [{Backend}]", _modelName, _backendName);
         }, ct);
     }
 
@@ -91,13 +92,13 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
         {
             var inferenceParams = new InferenceParams
             {
-                MaxTokens = _options.MaxResponseTokens,
+                MaxTokens  = _options.MaxResponseTokens,
                 AntiPrompts = new List<string> { "<|im_end|>", "<|endoftext|>" },
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
                     Temperature = _options.Temperature,
-                    TopP = 0.95f,
-                    TopK = 40
+                    TopP        = 0.95f,
+                    TopK        = 40
                 }
             };
 
@@ -109,6 +110,47 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
         finally
         {
             _inferenceLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Determines the compute backend to use.
+    /// Auto/Vulkan: probes GPU load; falls back to CPU if Vulkan is unavailable.
+    /// Cpu: skips the GPU probe entirely.
+    /// </summary>
+    private (ModelParams, string) ResolveBackend(string modelPath)
+    {
+        ModelParams Make(int gpuLayers) => new ModelParams(modelPath)
+        {
+            ContextSize   = (uint)_options.ContextSize,
+            GpuLayerCount = gpuLayers,
+            Threads       = _options.Threads
+        };
+
+        if (_options.Backend == LlmBackend.Cpu)
+        {
+            _logger.LogInformation("Backend: cpu (explicit), GPU layers: 0");
+            return (Make(0), "cpu");
+        }
+
+        // Auto or Vulkan — attempt GPU, fall back to CPU on failure
+        int gpuLayers = _options.GpuLayerCount > 0 ? _options.GpuLayerCount : 20;
+        try
+        {
+            var p = Make(gpuLayers);
+            // Probe load: confirms the GPU path works before committing
+            using var probe = LLamaWeights.LoadFromFile(p);
+            _logger.LogInformation("Backend: vulkan, GPU layers: {Layers}", gpuLayers);
+            return (p, "vulkan");
+        }
+        catch (Exception ex)
+        {
+            if (_options.Backend == LlmBackend.Vulkan)
+                throw new InvalidOperationException(
+                    $"Vulkan backend explicitly requested but failed to load: {ex.Message}", ex);
+
+            _logger.LogWarning("Vulkan unavailable ({Reason}), falling back to CPU", ex.Message);
+            return (Make(0), "cpu");
         }
     }
 

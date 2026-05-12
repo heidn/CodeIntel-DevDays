@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using CodeIntel.Server.Models;
 using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
@@ -13,6 +14,7 @@ public interface IWorkspaceService
     Workspace? GetWorkspace(string workspaceId);
     Task<string> ReadFileAsync(string workspaceId, string relativeOrAbsolutePath, CancellationToken ct = default);
     Solution? GetRoslynSolution(string workspaceId);
+    Task<DefinitionLocation?> FindDefinitionAsync(string workspaceId, string filePath, int line, int character, CancellationToken ct = default);
 }
 
 public sealed class WorkspaceService : IWorkspaceService, IDisposable
@@ -26,6 +28,7 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
     private static readonly string[] TsExtensions = [".ts", ".tsx", ".js", ".jsx"];
     private static readonly string[] JavaExtensions = [".java"];
     private static readonly string[] CsExtensions = [".cs"];
+    private static readonly string[] SqlExtensions = [".sql", ".pkg", ".pkb"];
     private static readonly string[] TsExcludeDirs = ["node_modules", "dist", ".next", "out", ".cache"];
     private static readonly string[] JavaExcludeDirs = ["target", "build", ".gradle"];
     private static readonly string[] TsExcludePatterns = [".min.js", ".d.ts"];
@@ -55,6 +58,8 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
             return Language.TypeScript;
         if (lower.EndsWith("pom.xml") || lower.EndsWith("build.gradle") || lower.EndsWith("build.gradle.kts"))
             return Language.Java;
+        if (SqlExtensions.Any(lower.EndsWith))
+            return Language.Sql;
 
         if (!Directory.Exists(path)) return Language.CSharp;
 
@@ -72,7 +77,7 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
     {
         var counts = new Dictionary<Language, int>
         {
-            [Language.CSharp] = 0, [Language.TypeScript] = 0, [Language.Java] = 0,
+            [Language.CSharp] = 0, [Language.TypeScript] = 0, [Language.Java] = 0, [Language.Sql] = 0,
         };
         try
         {
@@ -82,6 +87,7 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
                 if (CsExtensions.Contains(ext)) counts[Language.CSharp]++;
                 else if (TsExtensions.Contains(ext)) counts[Language.TypeScript]++;
                 else if (JavaExtensions.Contains(ext)) counts[Language.Java]++;
+                else if (SqlExtensions.Contains(ext)) counts[Language.Sql]++;
             }
         }
         catch { /* best effort */ }
@@ -161,7 +167,12 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
         if (!Directory.Exists(rootDir))
             throw new DirectoryNotFoundException($"Directory not found: {rootDir}");
 
-        var extensions = language == Language.Java ? JavaExtensions : TsExtensions;
+        var extensions = language switch
+        {
+            Language.Java => JavaExtensions,
+            Language.Sql  => SqlExtensions,
+            _             => TsExtensions,
+        };
         var excludeDirs = language == Language.Java ? JavaExcludeDirs : TsExcludeDirs;
         var excludePatterns = language == Language.TypeScript ? TsExcludePatterns : [];
 
@@ -273,6 +284,188 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
             if (!MSBuildLocator.IsRegistered) MSBuildLocator.RegisterDefaults();
             _msbuildRegistered = true;
         }
+    }
+
+    public async Task<DefinitionLocation?> FindDefinitionAsync(
+        string workspaceId, string filePath, int line, int character, CancellationToken ct = default)
+    {
+        var ext = Path.GetExtension(filePath).ToLowerInvariant();
+
+        if (ext == ".cs")
+            return await FindDefinitionRoslynAsync(workspaceId, filePath, line, character, ct);
+
+        // For all other supported languages: read the word from source then text-search.
+        if (!File.Exists(filePath)) return null;
+        var fileContent = await File.ReadAllTextAsync(filePath, ct);
+        var fileLines = fileContent.Split('\n');
+        var lineIndex = line - 1;
+        if (lineIndex < 0 || lineIndex >= fileLines.Length) return null;
+        var word = ExtractWordFromLine(fileLines[lineIndex], character);
+        if (word == null) return null;
+
+        return await FindDefinitionByTextAsync(workspaceId, filePath, word, ext, ct);
+    }
+
+    private async Task<DefinitionLocation?> FindDefinitionRoslynAsync(
+        string workspaceId, string filePath, int line, int character, CancellationToken ct)
+    {
+        var solution = GetRoslynSolution(workspaceId);
+        if (solution == null) return null;
+
+        var document = solution.Projects
+            .SelectMany(p => p.Documents)
+            .FirstOrDefault(d => string.Equals(d.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+
+        if (document == null) return null;
+
+        var sourceText = await document.GetTextAsync(ct);
+        var lineIndex = line - 1;
+        if (lineIndex < 0 || lineIndex >= sourceText.Lines.Count) return null;
+
+        var lineSpanLength = sourceText.Lines[lineIndex].Span.Length;
+        var position = sourceText.Lines[lineIndex].Start + Math.Min(character, lineSpanLength);
+
+        var root = await document.GetSyntaxRootAsync(ct);
+        var model = await document.GetSemanticModelAsync(ct);
+        if (root == null || model == null) return null;
+
+        var token = root.FindToken(position);
+        var node = token.Parent;
+        if (node == null) return null;
+
+        var symbol = model.GetSymbolInfo(node).Symbol
+            ?? model.GetSymbolInfo(node).CandidateSymbols.FirstOrDefault()
+            ?? model.GetDeclaredSymbol(node);
+
+        if (symbol == null) return null;
+
+        var defLocation = symbol.OriginalDefinition.Locations
+            .FirstOrDefault(l => l.IsInSource && l.SourceTree != null);
+
+        if (defLocation == null) return null;
+
+        var defSpan = defLocation.GetLineSpan();
+        return new DefinitionLocation(
+            FilePath: defLocation.SourceTree!.FilePath,
+            Line: defSpan.StartLinePosition.Line + 1,
+            Character: defSpan.StartLinePosition.Character,
+            SymbolName: symbol.Name
+        );
+    }
+
+    private async Task<DefinitionLocation?> FindDefinitionByTextAsync(
+        string workspaceId, string requestingFilePath, string word, string ext, CancellationToken ct)
+    {
+        var ws = GetWorkspace(workspaceId);
+        if (ws == null) return null;
+
+        var patterns = DefinitionPatterns(ext, word);
+        if (patterns.Count == 0) return null;
+
+        var groupExts = SameGroupExtensions(ext);
+
+        // Search other files first; fall back to the requesting file so local definitions work too.
+        var candidates = ws.Projects
+            .SelectMany(p => p.Files)
+            .Where(f => groupExts.Any(e => f.AbsolutePath.EndsWith(e, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(f => string.Equals(f.AbsolutePath, requestingFilePath, StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+            .ToList();
+
+        foreach (var file in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var content = await File.ReadAllTextAsync(file.AbsolutePath, ct);
+                var lines = content.Split('\n');
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    foreach (var pattern in patterns)
+                    {
+                        if (pattern.IsMatch(lines[i]))
+                        {
+                            return new DefinitionLocation(
+                                FilePath: file.AbsolutePath,
+                                Line: i + 1,
+                                Character: 0,
+                                SymbolName: word
+                            );
+                        }
+                    }
+                }
+            }
+            catch { /* skip unreadable files */ }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractWordFromLine(string line, int character)
+    {
+        if (character >= line.Length) return null;
+        static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+        var pos = character;
+        if (!IsWordChar(line[pos]))
+        {
+            if (pos > 0 && IsWordChar(line[pos - 1])) pos--;
+            else return null;
+        }
+        var start = pos;
+        var end = pos;
+        while (start > 0 && IsWordChar(line[start - 1])) start--;
+        while (end < line.Length - 1 && IsWordChar(line[end + 1])) end++;
+        var word = line[start..(end + 1)];
+        return word.Length > 0 ? word : null;
+    }
+
+    private static IReadOnlyList<string> SameGroupExtensions(string ext) => ext switch
+    {
+        ".ts" or ".tsx" or ".js" or ".jsx" => [".ts", ".tsx", ".js", ".jsx"],
+        ".java"                             => [".java"],
+        ".sql" or ".pkg" or ".pkb"         => [".sql", ".pkg", ".pkb"],
+        _                                   => [ext],
+    };
+
+    private static IReadOnlyList<Regex> DefinitionPatterns(string ext, string word)
+    {
+        var w = Regex.Escape(word);
+        const RegexOptions R = RegexOptions.Compiled;
+        const RegexOptions RI = RegexOptions.Compiled | RegexOptions.IgnoreCase;
+
+        return ext switch
+        {
+            ".ts" or ".tsx" or ".js" or ".jsx" =>
+            [
+                // function declaration: function myFn( / async function myFn(
+                new($@"(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+{w}\s*[(<]", R),
+                // const/let/var: const myFn = / const myFn:
+                new($@"(?:export\s+)?(?:const|let|var)\s+{w}\s*[:=]", R),
+                // class / interface / type / enum
+                new($@"(?:export\s+)?(?:abstract\s+)?(?:class|interface|type|enum)\s+{w}\b", R),
+                // class method with access modifier: public async myMethod(
+                new($@"^\s*(?:(?:public|private|protected|static|async|override|abstract|readonly|get|set)\s+)+{w}\s*[(<]", R),
+                // bare method/property shorthand inside a class body
+                new($@"^\s+{w}\s*[(<]", R),
+            ],
+
+            ".java" =>
+            [
+                // class / interface / enum / record
+                new($@"(?:class|interface|enum|record)\s+{w}\b", R),
+                // method: any return type followed by methodName(
+                new($@"\b[\w<>\[\]]+\s+{w}\s*\(", R),
+            ],
+
+            ".sql" or ".pkg" or ".pkb" =>
+            [
+                // CREATE [OR REPLACE] PROCEDURE/FUNCTION/TABLE/VIEW/PACKAGE [BODY] [schema.]name
+                new($@"\bCREATE\b.*?\b(?:PROCEDURE|FUNCTION|PACKAGE(?:\s+BODY)?|TABLE|VIEW|TYPE)\b\s+(?:\w+\.)?{w}\b", RI),
+                // package-body inline declaration: PROCEDURE name or FUNCTION name at start of line
+                new($@"^\s*(?:PROCEDURE|FUNCTION)\s+(?:\w+\.)?{w}\b", RI),
+            ],
+
+            _ => [],
+        };
     }
 
     public void Dispose()

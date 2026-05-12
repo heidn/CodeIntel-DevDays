@@ -4,7 +4,9 @@
 
 ## Status
 
-**Phase 1 of 3 — pipeline-only MVP scaffolded. Not yet built/tested.**
+**Phase 1 + Phase 2 implemented — not yet verified on a real run.**
+
+Phase 1 (one-shot pipeline) and Phase 2 (agentic investigation loop) are both coded. The agentic orchestrator (`InvestigationOrchestrator`) is the active DI registration. Neither phase has been tested end-to-end yet — verify clean build + first run is priority #1.
 
 Origin: dev days project, intended to grow into a team tool deployed on internal OpenShift.
 
@@ -12,7 +14,7 @@ Origin: dev days project, intended to grow into a team tool deployed on internal
 
 ## Architecture (one-paragraph)
 
-ASP.NET Core (.NET 10) hosts both the API and the React 19 SPA. The .NET server runs a GGUF model in-process via LLamaSharp. A request to `/api/analysis/run` returns immediately with an `analysisId`; the orchestrator builds context (currently raw file text via Roslyn workspace), assembles a Qwen-formatted ChatML prompt from an embedded MD template, streams tokens through `ILlmService.StreamAsync`, parses `<finding>{...}</finding>` blocks out of the stream into structured `Finding` objects, and pushes both raw tokens and parsed findings to the client over SignalR. Results cache in-memory by GUID; `/api/reports/{id}/download` produces an MD report designed to be pasted into Claude Opus for fix plans, Jira tickets, etc.
+ASP.NET Core (.NET 10) hosts both the API and the React 19 SPA. The .NET server runs a GGUF model in-process via LLamaSharp. A request to `/api/analysis/run` returns immediately with an `analysisId`; the `InvestigationOrchestrator` runs an agentic loop (up to 5 iterations): it builds context, assembles a Qwen-formatted ChatML prompt from an embedded MD template, streams tokens through `ILlmService.StreamAsync`, and the `FindingStreamParser` reads both `<finding>{...}</finding>` and `<request_context>...</request_context>` blocks out of the stream. When the LLM requests more context, `ContextRequestHandler` fulfills it via Roslyn (file, class, method, callers, callees, search); findings and raw tokens are pushed to the client over SignalR. Results cache in-memory by GUID; `/api/reports/{id}/download` produces an MD report designed to be pasted into Claude Opus for fix plans, Jira tickets, etc. A non-agentic `AnalysisOrchestrator` also exists as a fallback but is not wired in DI.
 
 ---
 
@@ -57,8 +59,10 @@ CodeIntel/
     │   ├── LlamaSharpService.cs         ← singleton, semaphore-serialized inference
     │   ├── ContextBuilder.cs            ← raw-text bundling with token budget
     │   ├── PromptTemplateService.cs     ← loads embedded MD prompts, ChatML format
-    │   ├── FindingStreamParser.cs       ← parses <finding>...</finding> from stream
-    │   ├── AnalysisOrchestrator.cs      ← the pipeline
+    │   ├── FindingStreamParser.cs       ← parses <finding> + <request_context> from stream
+    │   ├── AnalysisOrchestrator.cs      ← one-shot pipeline (not active in DI)
+    │   ├── InvestigationOrchestrator.cs ← agentic loop, up to 5 iterations (ACTIVE)
+    │   ├── ContextRequestHandler.cs     ← fulfills LLM context requests via Roslyn
     │   ├── ReportGenerator.cs           ← MD output for Opus handoff
     │   └── AnalysisResultStore.cs       ← in-memory cache
     ├── Models/
@@ -84,11 +88,14 @@ CodeIntel/
             ├── types/index.ts           ← shared API contracts
             └── components/
                 ├── StatusDot.tsx
-                ├── SolutionPanel.tsx    ← left sidebar: load + tree
-                ├── FileTree.tsx         ← SimpleTreeView with checkboxes
-                ├── AnalysisPanel.tsx    ← center column container
-                ├── PromptSelector.tsx   ← preset cards + free text + run
-                └── ResultsView.tsx      ← streaming pane + findings cards
+                ├── SolutionPanel.tsx        ← left sidebar: load + tree
+                ├── FileTree.tsx             ← SimpleTreeView with checkboxes
+                ├── FolderPickerDialog.tsx   ← modal filesystem browser for .sln path
+                ├── AnalysisPanel.tsx        ← center column + tab bar (Analysis + file previews)
+                ├── PromptSelector.tsx       ← preset cards + free text + run
+                ├── ResultsView.tsx          ← streaming pane + findings cards
+                ├── CodeAnnotationView.tsx   ← code with inline finding highlights
+                └── FilePreviewPanel.tsx     ← readonly code display with syntax highlighting
 ```
 
 ---
@@ -100,8 +107,8 @@ CodeIntel/
 - **Inference serialized by `SemaphoreSlim(1,1)`** — LLamaSharp contexts are not thread-safe. For dev days this is fine; OpenShift scales horizontally with multiple pods.
 - **SignalR with single event channel** — all analysis events flow through `OnAsync("AnalysisEvent", ...)` with a `type` discriminator. Client switches on it. Avoids a proliferation of named events.
 - **`<finding>` tag wrapping** — chosen over raw JSON-per-line because it's robust against the LLM prepending prose, easier to parse with regex, and degrades gracefully if the model gets confused mid-token.
-- **Raw file text in context (not Roslyn-extracted method bodies)** — picked for v1 simplicity. Roslyn is loaded for workspace discovery but not yet used to compress context. This is the first thing to upgrade if context budget becomes the bottleneck.
-- **In-memory result store** — sessions don't persist. DB persistence comes when we add the agentic loop (next phase).
+- **Raw file text for initial context; Roslyn for follow-up requests** — initial context is assembled from raw file text. When the agentic loop requests a class/method/callers/callees, `ContextRequestHandler` fulfills those via Roslyn symbol resolution. Upgrade initial context assembly to Roslyn extraction if token budget becomes the bottleneck.
+- **In-memory result store** — sessions don't persist. DB persistence is a future phase.
 - **No auth for MVP** — explicit choice. Add Windows Auth via IIS passthrough when deploying internally.
 
 ---
@@ -164,25 +171,25 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 
 ## What's Built vs Not Built
 
-### ✅ In the MVP
+### ✅ Coded (not yet end-to-end tested)
 
 - Solution loading via Roslyn workspace
-- File tree UI with project + file selection
+- File tree UI with project + file selection; folder picker dialog
 - 4 preset prompts: find dead code / bugs / business rules / summarize
 - Free-text mode
 - SignalR token streaming with live UI updates
-- Structured finding extraction during stream
+- Structured finding extraction during stream (`<finding>` blocks)
+- **Agentic investigation loop** — `InvestigationOrchestrator` (up to 5 iterations); LLM emits `<request_context>` to pull additional file/class/method/callers/callees/search results via Roslyn
+- Inline code annotations (`CodeAnnotationView`) + file preview tabs (`FilePreviewPanel`)
 - MD report generation with Opus handoff section + download
 - Dark dev-tool aesthetic (JetBrains Mono + Inter Tight)
 - In-memory result history
 
 ### ❌ Deferred (next sessions)
 
-- **Agentic investigation loop** — LLM requests next file/proc/symbol it needs. The "spiderweb feature."
-- **Bug finder mode** — keyword targeting + agentic loop. Depends on above.
 - **Database introspection** — dump table schemas + stored proc bodies into context. Plan is to use existing app DB connection; persistent tables for session history go in our own DB.
 - **Skills system** — folder of `SKILL.md` files (csharp-bug-hunting, stored-proc-analysis, etc.) injected into prompts.
-- **Roslyn-extracted context** — currently raw file text. Upgrade to method-level extraction when context budget gets tight.
+- **Roslyn-extracted initial context** — currently raw file text for the first iteration. Upgrade to method-level extraction when context budget gets tight.
 - **OpenShift deployment** — Dockerfile, persistent volume for model, ConfigMap for `appsettings`.
 - **Auth** — Windows Auth via IIS passthrough on the internal network.
 - **Persistence** — DB tables for analysis history, saved reports, prompt template versions.
@@ -193,8 +200,8 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 
 In recommended order:
 
-1. **Verify clean build + first run.** Load a real `.sln`, select a few files, run "find bugs" preset, watch tokens stream, check that findings appear as cards, export MD report. If anything fails, fix before moving on.
-2. **Agentic investigation loop.** Replace the one-shot pipeline with an iteration loop that lets the LLM emit either `report_findings` or `request_context`. Spec is in conversation history; key new pieces: `InvestigationOrchestrator`, `ContextRequestHandler`, request types (`file`, `class`, `method`, `callers_of`, `callees_of`, `search_code`).
+1. **Verify clean build + first run.** `dotnet run --project src\CodeIntel.Server`. Load a real `.sln`, select files, run "find bugs" preset, watch tokens stream, confirm findings appear as cards, export MD report. Fix anything broken before proceeding.
+2. **Smoke-test the agentic loop.** Pick a preset that's likely to trigger a `<request_context>` (e.g. "find bugs" on a few files). Watch SignalR events for `iterationStarted` / `contextRequested` / `contextFulfilled` events. Confirm the loop terminates and findings still appear. `ContextRequestHandler` Roslyn resolution is the most likely gap.
 3. **DB context.** Extend `ContextBuilder` to accept selected DB objects (table names, proc names), pull from a `DbIntrospectionService`, include in prompt context.
 4. **Skills.** Create `Skills/` folder structure, `SkillRouter` for mode + keyword routing, inject relevant skill content into system prompt.
 5. **Dockerfile + OpenShift** — multi-stage build (npm → dotnet publish), volume mount for `/models`, ConfigMap for runtime tuning.

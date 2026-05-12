@@ -62,6 +62,11 @@ public class PromptTemplateService : IPromptTemplateService
         sb.Append("\n<|im_end|>\n");
         sb.Append("<|im_start|>user\n");
         sb.Append(taskBlock);
+        if (request.PinnedSnippet is not null)
+        {
+            sb.Append("\n\n");
+            sb.Append(BuildSnippetBlock(request.PinnedSnippet));
+        }
         sb.Append("\n\n");
         sb.Append(contextBlock);
         sb.Append("\n<|im_end|>\n");
@@ -93,6 +98,11 @@ public class PromptTemplateService : IPromptTemplateService
         sb.Append("\n<|im_end|>\n");
         sb.Append("<|im_start|>user\n");
         sb.Append(taskBlock);
+        if (request.PinnedSnippet is not null)
+        {
+            sb.Append("\n\n");
+            sb.Append(BuildSnippetBlock(request.PinnedSnippet));
+        }
         sb.Append("\n\n");
         sb.Append(contextBlock);
         sb.Append("\n<|im_end|>\n");
@@ -121,6 +131,11 @@ public class PromptTemplateService : IPromptTemplateService
         sb.Append("\n<|im_end|>\n");
         sb.Append("<|im_start|>user\n");
         sb.Append(taskBlock);
+        if (request.PinnedSnippet is not null)
+        {
+            sb.Append("\n\n");
+            sb.Append(BuildSnippetBlock(request.PinnedSnippet));
+        }
         sb.Append("\n\n");
         sb.Append(contextBlock);
         sb.Append("\n<|im_end|>\n");
@@ -154,6 +169,7 @@ public class PromptTemplateService : IPromptTemplateService
         {
             Language.TypeScript => "senior TypeScript / JavaScript developer",
             Language.Java => "senior Java developer",
+            Language.Sql => "senior database developer and SQL / PL/SQL expert",
             _ => "senior C# / .NET code reviewer",
         };
         return $$"""
@@ -177,6 +193,7 @@ public class PromptTemplateService : IPromptTemplateService
         {
             Language.TypeScript => "senior TypeScript / JavaScript developer",
             Language.Java => "senior Java developer",
+            Language.Sql => "senior database developer and SQL / PL/SQL expert",
             _ => "senior C# / .NET code reviewer",
         };
         return $$"""
@@ -221,12 +238,39 @@ public class PromptTemplateService : IPromptTemplateService
         {
             sb.AppendLine();
             sb.AppendLine($"// FILE: {file.RelativePath}");
-            sb.AppendLine("```csharp");
+            sb.AppendLine($"```{FileLang(file.RelativePath)}");
             sb.AppendLine(file.Content);
             sb.AppendLine("```");
         }
         sb.AppendLine();
         sb.AppendLine("--- END CODE CONTEXT ---");
+        return sb.ToString();
+    }
+
+    private static string FileLang(string? path) =>
+        Path.GetExtension(path)?.ToLowerInvariant() switch
+        {
+            ".cs"                                   => "csharp",
+            ".sql" or ".pkb" or ".pkg" or ".pks" or ".pls" => "sql",
+            ".ts" or ".tsx"                         => "typescript",
+            ".js" or ".jsx"                         => "javascript",
+            ".py"                                   => "python",
+            ".java"                                 => "java",
+            _                                       => ""
+        };
+
+    private static string BuildSnippetBlock(PinnedSnippet snippet)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("--- FOCUS AREA ---");
+        sb.AppendLine("The developer has pinned this code region for priority analysis.");
+        sb.AppendLine("Pay close attention to this specific section:");
+        sb.AppendLine();
+        sb.AppendLine($"// FILE: {snippet.AbsolutePath}, lines {snippet.StartLine}–{snippet.EndLine}");
+        sb.AppendLine("```");
+        sb.AppendLine(snippet.Text);
+        sb.AppendLine("```");
+        sb.Append("--- END FOCUS AREA ---");
         return sb.ToString();
     }
 

@@ -105,7 +105,9 @@ export default function App() {
               color="text.secondary"
               sx={{ fontFamily: '"JetBrains Mono", monospace' }}
             >
-              {status?.llmReady ? status.modelName : 'loading model...'}
+              {status?.llmReady
+                ? `${status.modelName} · ${status.backendName}`
+                : 'loading model...'}
             </Typography>
           </Stack>
         </Toolbar>

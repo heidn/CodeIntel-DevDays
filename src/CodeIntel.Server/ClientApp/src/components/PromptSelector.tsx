@@ -15,6 +15,7 @@ import SkullIcon from '@mui/icons-material/HeartBrokenOutlined';
 import BugReportIcon from '@mui/icons-material/BugReportOutlined';
 import GavelIcon from '@mui/icons-material/GavelOutlined';
 import AutoStoriesIcon from '@mui/icons-material/AutoStoriesOutlined';
+import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { getPresets, startAnalysis } from '../api/analysis';
@@ -32,17 +33,23 @@ const iconMap: Record<string, React.ReactNode> = {
   book: <AutoStoriesIcon sx={{ fontSize: 18 }} />,
 };
 
+function baseFileName(path: string): string {
+  return path.replace(/\\/g, '/').split('/').pop() ?? path;
+}
+
 export default function PromptSelector() {
   const [mode, setMode] = useState<Mode>('preset');
-  const workspace = useWorkspaceStore((s) => s.workspace);
+  const workspace     = useWorkspaceStore((s) => s.workspace);
   const selectedFiles = useWorkspaceStore((s) => s.selectedFiles);
+  const pinnedSnippet = useWorkspaceStore((s) => s.pinnedSnippet);
+  const pinSnippet    = useWorkspaceStore((s) => s.pinSnippet);
 
   const selectedPresetKey = useAnalysisStore((s) => s.selectedPresetKey);
-  const freeTextPrompt = useAnalysisStore((s) => s.freeTextPrompt);
-  const setPreset = useAnalysisStore((s) => s.setPreset);
-  const setFreeText = useAnalysisStore((s) => s.setFreeText);
-  const startRun = useAnalysisStore((s) => s.startRun);
-  const runState = useAnalysisStore((s) => s.runState);
+  const freeTextPrompt    = useAnalysisStore((s) => s.freeTextPrompt);
+  const setPreset         = useAnalysisStore((s) => s.setPreset);
+  const setFreeText       = useAnalysisStore((s) => s.setFreeText);
+  const startRun          = useAnalysisStore((s) => s.startRun);
+  const runState          = useAnalysisStore((s) => s.runState);
 
   const { data: presets = [] } = useQuery({ queryKey: ['presets'], queryFn: getPresets });
 
@@ -72,6 +79,7 @@ export default function PromptSelector() {
       freeTextPrompt: mode === 'freeText' ? freeTextPrompt : null,
       selectedFilePaths: Array.from(selectedFiles),
       workspaceId: workspace.id,
+      pinnedSnippet: pinnedSnippet ?? null,
     });
   };
 
@@ -165,11 +173,20 @@ export default function PromptSelector() {
       )}
 
       <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
           {selectedFiles.size > 0 && (
             <Chip
               size="small"
               label={`${selectedFiles.size} ${selectedFiles.size === 1 ? 'file' : 'files'} selected`}
+              sx={{ bgcolor: 'rgba(79, 70, 229, 0.08)', color: 'primary.main' }}
+            />
+          )}
+          {pinnedSnippet && (
+            <Chip
+              size="small"
+              icon={<PushPinOutlinedIcon sx={{ fontSize: 12 }} />}
+              label={`Lines ${pinnedSnippet.startLine}–${pinnedSnippet.endLine} of ${baseFileName(pinnedSnippet.absolutePath)}`}
+              onDelete={() => pinSnippet(null)}
               sx={{ bgcolor: 'rgba(79, 70, 229, 0.08)', color: 'primary.main' }}
             />
           )}

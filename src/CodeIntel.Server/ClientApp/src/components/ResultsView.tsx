@@ -11,15 +11,20 @@ import {
   Tooltip,
   ToggleButtonGroup,
   ToggleButton,
+  TextField,
+  Snackbar,
+  CircularProgress,
 } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CodeIcon from '@mui/icons-material/CodeOutlined';
 import SubjectIcon from '@mui/icons-material/SubjectOutlined';
+import SaveAltIcon from '@mui/icons-material/SaveAltOutlined';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
 import { useAnalysisStore } from '../stores/analysisStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
-import { downloadReportUrl } from '../api/analysis';
+import { downloadReportUrl, saveReport } from '../api/analysis';
 import CodeAnnotationView from './CodeAnnotationView';
 import type { Finding, Severity } from '../types';
 
@@ -123,6 +128,23 @@ export default function ResultsView() {
 
   const [activeTab, setActiveTab] = useState<'output' | 'code'>('output');
 
+  const [savePanelOpen, setSavePanelOpen] = useState(false);
+  const [savePath, setSavePath]           = useState('');
+  const [saving, setSaving]               = useState(false);
+  const [savedInfo, setSavedInfo]         = useState<{ relativePath: string; copilotRef: string } | null>(null);
+  const [saveError, setSaveError]         = useState<string | null>(null);
+  const [toast, setToast]                 = useState<string | null>(null);
+
+  // Reset save state whenever a new analysis starts
+  useEffect(() => {
+    if (runState === 'starting') {
+      setSavePanelOpen(false);
+      setSavePath('');
+      setSavedInfo(null);
+      setSaveError(null);
+    }
+  }, [runState]);
+
   const streamRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -146,6 +168,34 @@ export default function ResultsView() {
     .replace(/<finding>[\s\S]*?<\/finding>/g, '')
     .replace(/<done\s*\/>/g, '')
     .trim();
+
+  async function handleSave() {
+    if (!currentAnalysisId) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const trimmed = savePath.trim();
+      const res = await saveReport(currentAnalysisId, trimmed || undefined);
+      setSavedInfo({ relativePath: res.relativePath, copilotRef: res.copilotReference });
+      setSavePanelOpen(false);
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        (err instanceof Error ? err.message : 'Save failed');
+      setSaveError(msg);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function copyToClipboard(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setToast(`${label} copied`);
+    } catch {
+      setToast(`Couldn't copy ${label.toLowerCase()}`);
+    }
+  }
 
   return (
     <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, bgcolor: 'background.paper' }}>
@@ -209,10 +259,19 @@ export default function ResultsView() {
           {isComplete && currentAnalysisId && (
             <>
               <Tooltip title="Copy raw output">
-                <IconButton size="small" onClick={() => navigator.clipboard.writeText(streamedText)}>
+                <IconButton size="small" onClick={() => copyToClipboard(streamedText, 'Output')}>
                   <ContentCopyIcon sx={{ fontSize: 16 }} />
                 </IconButton>
               </Tooltip>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<SaveAltIcon sx={{ fontSize: 16 }} />}
+                onClick={() => setSavePanelOpen((o) => !o)}
+                disabled={!workspace}
+              >
+                Save to repo
+              </Button>
               <Button
                 size="small"
                 variant="outlined"
@@ -233,6 +292,113 @@ export default function ResultsView() {
           )}
         </Stack>
       </Stack>
+
+      {/* Save panel — appears under header when user clicks Save to repo */}
+      {savePanelOpen && isComplete && (
+        <Box
+          sx={{
+            px: 3,
+            py: 1.5,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'background.default',
+            flexShrink: 0,
+          }}
+        >
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+            Write a markdown report into the loaded repo, relative to {workspace?.projectName ?? 'repo'} root.
+            Leave path blank to use the default (<code>docs/codeintel</code>).
+          </Typography>
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+            <TextField
+              size="small"
+              fullWidth
+              placeholder="docs/codeintel"
+              value={savePath}
+              onChange={(e) => setSavePath(e.target.value)}
+              disabled={saving}
+              sx={{ '& input': { fontFamily: '"JetBrains Mono", monospace', fontSize: '0.8125rem' } }}
+            />
+            <Button
+              size="small"
+              variant="contained"
+              onClick={handleSave}
+              disabled={saving}
+              startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveAltIcon sx={{ fontSize: 16 }} />}
+            >
+              {saving ? 'Saving' : 'Save'}
+            </Button>
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => { setSavePanelOpen(false); setSaveError(null); }}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+          </Stack>
+          {saveError && (
+            <Alert severity="error" sx={{ mt: 1, fontSize: '0.8125rem' }}>
+              {saveError}
+            </Alert>
+          )}
+        </Box>
+      )}
+
+      {/* Saved confirmation banner */}
+      {savedInfo && (
+        <Box
+          sx={{
+            px: 3,
+            py: 1.25,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'rgba(22,163,74,0.06)',
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+          }}
+        >
+          <CheckCircleOutlineIcon sx={{ fontSize: 16, color: 'success.main', flexShrink: 0 }} />
+          <Typography
+            variant="caption"
+            sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.75rem', color: 'text.primary', flex: 1, minWidth: 0, wordBreak: 'break-all' }}
+          >
+            Saved to <strong>{savedInfo.relativePath}</strong>
+          </Typography>
+          <Tooltip title="Copy file path">
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => copyToClipboard(savedInfo.relativePath, 'Path')}
+              startIcon={<ContentCopyIcon sx={{ fontSize: 14 }} />}
+              sx={{ fontSize: '0.7rem', textTransform: 'none' }}
+            >
+              path
+            </Button>
+          </Tooltip>
+          <Tooltip title={`Copy "${savedInfo.copilotRef}" for Copilot Chat`}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => copyToClipboard(savedInfo.copilotRef, 'Copilot reference')}
+              startIcon={<ContentCopyIcon sx={{ fontSize: 14 }} />}
+              sx={{ fontSize: '0.7rem', textTransform: 'none' }}
+            >
+              #file: reference
+            </Button>
+          </Tooltip>
+        </Box>
+      )}
+
+      <Snackbar
+        open={!!toast}
+        autoHideDuration={2000}
+        onClose={() => setToast(null)}
+        message={toast}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      />
 
       {isActive && (
         <Box

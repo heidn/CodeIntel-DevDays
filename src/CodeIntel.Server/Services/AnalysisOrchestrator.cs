@@ -103,7 +103,8 @@ public class AnalysisOrchestrator : IAnalysisOrchestrator
                 Findings: parser.Findings.ToList(),
                 RawLlmOutput: parser.RawOutput,
                 ContextTokens: context.EstimatedTokens,
-                Duration: sw.Elapsed
+                Duration: sw.Elapsed,
+                WorkspaceId: request.WorkspaceId
             );
             _store.Save(result);
 

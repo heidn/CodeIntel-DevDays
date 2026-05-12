@@ -1,0 +1,42 @@
+CREATE OR REPLACE PACKAGE orders_api AS
+
+    TYPE t_order_summary IS RECORD (
+        order_id      orders.order_id%TYPE,
+        customer_id   orders.customer_id%TYPE,
+        order_date    orders.order_date%TYPE,
+        total_amount  orders.total_amount%TYPE,
+        status        orders.status%TYPE,
+        first_name    customers.first_name%TYPE,
+        last_name     customers.last_name%TYPE
+    );
+
+    TYPE t_order_line IS RECORD (
+        item_id       order_items.item_id%TYPE,
+        product_code  order_items.product_code%TYPE,
+        product_name  products.product_name%TYPE,
+        quantity      order_items.quantity%TYPE,
+        unit_price    order_items.unit_price%TYPE,
+        line_total    NUMBER(14,2)
+    );
+
+    TYPE t_order_summary_tab IS TABLE OF t_order_summary;
+    TYPE t_order_line_tab    IS TABLE OF t_order_line;
+
+    PROCEDURE get_orders_by_customer (
+        p_customer_id  IN  customers.customer_id%TYPE,
+        p_status       IN  orders.status%TYPE DEFAULT NULL,
+        p_result       OUT SYS_REFCURSOR
+    );
+
+    PROCEDURE get_order_details (
+        p_order_id  IN  orders.order_id%TYPE,
+        p_result    OUT SYS_REFCURSOR
+    );
+
+    PROCEDURE get_customer_summary (
+        p_customer_id  IN  customers.customer_id%TYPE,
+        p_result       OUT SYS_REFCURSOR
+    );
+
+END orders_api;
+/

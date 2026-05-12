@@ -1,5 +1,12 @@
 export type Severity = 'info' | 'suggestion' | 'warning' | 'bug' | 'deadCode';
 
+export interface PinnedSnippet {
+  absolutePath: string;
+  startLine: number;
+  endLine: number;
+  text: string;
+}
+
 export type AnalysisMode = 'preset' | 'freeText';
 
 export interface Finding {
@@ -32,7 +39,7 @@ export interface ProjectNode {
   files: FileNode[];
 }
 
-export type Language = 'cSharp' | 'typeScript' | 'java';
+export type Language = 'cSharp' | 'typeScript' | 'java' | 'sql';
 
 export interface Workspace {
   id: string;
@@ -50,6 +57,7 @@ export interface AnalysisRequest {
   selectedFilePaths: string[];
   workspaceId: string;
   analysisId: string;
+  pinnedSnippet?: PinnedSnippet | null;
 }
 
 export type AnalysisEvent =
@@ -66,4 +74,12 @@ export type AnalysisEvent =
 export interface LlmStatus {
   llmReady: boolean;
   modelName: string;
+  backendName: string;
+}
+
+export interface DefinitionLocation {
+  filePath: string;
+  line: number;
+  character: number;
+  symbolName: string;
 }

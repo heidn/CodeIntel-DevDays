@@ -19,3 +19,18 @@ export async function startAnalysis(req: AnalysisRequest): Promise<{ analysisId:
 export function downloadReportUrl(analysisId: string): string {
   return `/api/reports/${analysisId}/download`;
 }
+
+export interface SaveReportResponse {
+  analysisId: string;
+  absolutePath: string;
+  relativePath: string;
+  copilotReference: string;
+}
+
+export async function saveReport(analysisId: string, outputPath?: string): Promise<SaveReportResponse> {
+  const { data } = await apiClient.post<SaveReportResponse>(
+    `/reports/${analysisId}/save`,
+    { outputPath: outputPath ?? null }
+  );
+  return data;
+}

@@ -118,6 +118,30 @@ public class WorkspaceController : ControllerBase
         }
     }
 
+    [HttpGet("{id}/definition")]
+    public async Task<IActionResult> GetDefinition(
+        string id,
+        [FromQuery] string file,
+        [FromQuery] int line,
+        [FromQuery] int character,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(file))
+            return BadRequest(new { error = "file is required" });
+
+        try
+        {
+            var result = await _workspace.FindDefinitionAsync(id, file, line, character, ct);
+            if (result == null) return NotFound(new { error = "Definition not found" });
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Definition lookup failed for {File}:{Line}:{Char}", file, line, character);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
     [HttpGet("{id}/file")]
     public async Task<IActionResult> GetFile(string id, [FromQuery] string path, CancellationToken ct)
     {

@@ -14,6 +14,8 @@ import {
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import DriveFileMoveIcon from '@mui/icons-material/DriveFileMove';
 import ClearAllIcon from '@mui/icons-material/ClearAll';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { useMutation } from '@tanstack/react-query';
 import { loadSolution } from '../api/workspace';
 import { useWorkspaceStore } from '../stores/workspaceStore';
@@ -28,6 +30,7 @@ export default function SolutionPanel() {
 
   const [path, setPath] = useState('');
   const [browseOpen, setBrowseOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   const loadMutation = useMutation({
     mutationFn: loadSolution,
@@ -35,6 +38,32 @@ export default function SolutionPanel() {
   });
 
   const totalFiles = workspace?.projects.reduce((sum, p) => sum + p.files.length, 0) ?? 0;
+
+  if (collapsed) {
+    return (
+      <Box
+        sx={{
+          width: 40,
+          minWidth: 40,
+          height: '100%',
+          borderRight: '1px solid',
+          borderColor: 'divider',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          pt: 1,
+          bgcolor: '#f8fafc',
+          flexShrink: 0,
+        }}
+      >
+        <Tooltip title="Expand project panel" placement="right">
+          <IconButton size="small" onClick={() => setCollapsed(false)}>
+            <ChevronRightIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -50,9 +79,16 @@ export default function SolutionPanel() {
       }}
     >
       <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
-        <Typography variant="overline" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
-          Project
-        </Typography>
+        <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+          <Typography variant="overline" color="text.secondary">
+            Project
+          </Typography>
+          <Tooltip title="Collapse panel" placement="right">
+            <IconButton size="small" onClick={() => setCollapsed(true)} sx={{ mr: -0.5 }}>
+              <ChevronLeftIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+        </Stack>
         <Stack spacing={1}>
           <Stack direction="row" spacing={0.75}>
             <TextField

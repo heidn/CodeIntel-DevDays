@@ -15,13 +15,21 @@ public enum Severity
     DeadCode
 }
 
+public record PinnedSnippet(
+    string AbsolutePath,
+    int StartLine,
+    int EndLine,
+    string Text
+);
+
 public record AnalysisRequest(
     AnalysisMode Mode,
     string? PresetKey,
     string? FreeTextPrompt,
     List<string> SelectedFilePaths,
     string WorkspaceId,
-    Guid? AnalysisId = null
+    Guid? AnalysisId = null,
+    PinnedSnippet? PinnedSnippet = null
 );
 
 public record Finding(
@@ -58,5 +66,7 @@ public record AnalysisResult(
     List<Finding> Findings,
     string RawLlmOutput,
     int ContextTokens,
-    TimeSpan Duration
+    TimeSpan Duration,
+    string WorkspaceId,
+    string? ReportPath = null
 );

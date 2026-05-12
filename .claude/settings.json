@@ -18,7 +18,26 @@
       "Bash(git diff*)",
       "Bash(git log*)",
       "Bash(git show*)",
-      "Bash(git branch*)"
+      "Bash(git branch*)",
+      "Bash(taskkill*)",
+      "Bash(tasklist*)",
+      "PowerShell(Stop-Process*)",
+      "PowerShell(Get-Process*)",
+      "PowerShell(Start-Process*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "Write-Output '{\"systemMessage\": \"Session ending — if architecture, decisions, or phase status changed this session, update CLAUDE.md (Status + Pickup Priorities + What\\u0027s Built) and commit it.\"}'",
+            "statusMessage": "Reminding to update CLAUDE.md..."
+          }
+        ]
+      }
     ]
   }
 }

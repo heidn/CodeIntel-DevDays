@@ -1,27 +1,57 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Stack, Typography, IconButton, Tooltip } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
-import AnalyticsOutlinedIcon from '@mui/icons-material/AnalyticsOutlined';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import PromptSelector from './PromptSelector';
 import ResultsView from './ResultsView';
 import FilePreviewPanel from './FilePreviewPanel';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 
-const ANALYSIS_TAB = '__analysis__';
-
 function fileName(path: string): string {
   return path.replace(/\\/g, '/').split('/').pop() ?? path;
 }
+
+const MIN_PREVIEW_WIDTH = 250;
+const MIN_ANALYSIS_WIDTH = 320;
 
 export default function AnalysisPanel() {
   const workspace     = useWorkspaceStore((s) => s.workspace);
   const previewedFile = useWorkspaceStore((s) => s.previewedFile);
 
   const [openFileTabs, setOpenFileTabs] = useState<string[]>([]);
-  const [activeTab, setActiveTab]       = useState<string>(ANALYSIS_TAB);
+  const [activeTab, setActiveTab]       = useState<string | null>(null);
+  const [previewWidth, setPreviewWidth] = useState(560);
+  const [scrollTargets, setScrollTargets] = useState<Record<string, number>>({});
 
-  // When a new file is previewed from the left nav, open/focus its tab
+  const containerRef   = useRef<HTMLDivElement>(null);
+  const isDragging     = useRef(false);
+  const dragStartX     = useRef(0);
+  const dragStartWidth = useRef(0);
+
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    isDragging.current    = true;
+    dragStartX.current    = e.clientX;
+    dragStartWidth.current = previewWidth;
+    e.preventDefault();
+  }, [previewWidth]);
+
+  useEffect(() => {
+    function onMouseMove(e: MouseEvent) {
+      if (!isDragging.current || !containerRef.current) return;
+      const delta    = dragStartX.current - e.clientX;
+      const totalW   = containerRef.current.offsetWidth;
+      const maxPreview = totalW - MIN_ANALYSIS_WIDTH;
+      setPreviewWidth(Math.max(MIN_PREVIEW_WIDTH, Math.min(dragStartWidth.current + delta, maxPreview)));
+    }
+    function onMouseUp() { isDragging.current = false; }
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
   const prevPreviewedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!previewedFile || previewedFile === prevPreviewedRef.current) return;
@@ -36,139 +66,164 @@ export default function AnalysisPanel() {
     e.stopPropagation();
     setOpenFileTabs((prev) => {
       const next = prev.filter((p) => p !== path);
-      // If we just closed the active tab, go to the one before it or Analysis
       if (activeTab === path) {
         const idx = prev.indexOf(path);
-        const fallback = next[idx - 1] ?? next[0] ?? ANALYSIS_TAB;
-        setActiveTab(fallback);
+        setActiveTab(next[idx - 1] ?? next[0] ?? null);
       }
       return next;
     });
   }
 
-  const isFileTab   = activeTab !== ANALYSIS_TAB;
-  const activeWsId  = workspace?.id ?? '';
+  const handleNavigate = useCallback((filePath: string, line: number) => {
+    setOpenFileTabs((prev) => prev.includes(filePath) ? prev : [...prev, filePath]);
+    setActiveTab(filePath);
+    setScrollTargets((prev) => ({ ...prev, [filePath]: line }));
+  }, []);
+
+  const hasFiles   = openFileTabs.length > 0;
+  const activeWsId = workspace?.id ?? '';
 
   return (
-    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, height: '100%' }}>
-      {/* Tab bar */}
+    <Box ref={containerRef} sx={{ flex: 1, display: 'flex', minWidth: 0, height: '100%' }}>
+
+      {/* ── Analysis pane (always visible, left) ── */}
       <Box
         sx={{
           display: 'flex',
-          alignItems: 'stretch',
-          borderBottom: '1px solid',
-          borderColor: 'divider',
-          bgcolor: 'background.default',
-          overflowX: 'auto',
-          flexShrink: 0,
-          '&::-webkit-scrollbar': { height: 3 },
-          '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(0,0,0,0.15)', borderRadius: 2 },
+          flexDirection: 'column',
+          flex: 1,
+          minWidth: MIN_ANALYSIS_WIDTH,
+          height: '100%',
         }}
       >
-        {/* Analysis tab */}
-        <Tab
-          active={activeTab === ANALYSIS_TAB}
-          onClick={() => setActiveTab(ANALYSIS_TAB)}
-          icon={<AnalyticsOutlinedIcon sx={{ fontSize: 13 }} />}
-          label="Analysis"
-        />
-
-        {/* File tabs */}
-        {openFileTabs.map((path) => (
-          <Tab
-            key={path}
-            active={activeTab === path}
-            onClick={() => setActiveTab(path)}
-            onClose={(e) => closeTab(path, e)}
-            icon={<InsertDriveFileOutlinedIcon sx={{ fontSize: 13 }} />}
-            label={fileName(path)}
-          />
-        ))}
+        <Stack
+          sx={{ flex: 1, minHeight: 0 }}
+          divider={<Box sx={{ borderBottom: '1px solid', borderColor: 'divider' }} />}
+        >
+          <PromptSelector />
+          <ResultsView />
+        </Stack>
       </Box>
 
-      {/* Tab content */}
-      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        {/* Analysis tab — always mounted so results are never unmounted/cleared */}
+      {/* ── File preview pane (right, only when tabs are open) ── */}
+      {hasFiles && (
+        <>
+        {/* Drag handle */}
+        <Box
+          onMouseDown={onDragStart}
+          sx={{
+            width: 5,
+            flexShrink: 0,
+            cursor: 'col-resize',
+            bgcolor: 'divider',
+            position: 'relative',
+            transition: 'background-color 0.15s',
+            '&:hover': { bgcolor: 'primary.main' },
+            '&::after': {
+              content: '""',
+              position: 'absolute',
+              inset: '0 -3px',
+            },
+          }}
+        />
         <Box
           sx={{
-            flex: 1,
-            display: activeTab === ANALYSIS_TAB ? 'flex' : 'none',
+            width: previewWidth,
+            flexShrink: 0,
+            display: 'flex',
             flexDirection: 'column',
-            minHeight: 0,
+            minWidth: MIN_PREVIEW_WIDTH,
+            height: '100%',
           }}
         >
-          <Stack
-            sx={{ flex: 1, minHeight: 0 }}
-            divider={<Box sx={{ borderBottom: '1px solid', borderColor: 'divider' }} />}
-          >
-            <PromptSelector />
-            <ResultsView />
-          </Stack>
-        </Box>
 
-        {/* File preview tabs */}
-        {openFileTabs.map((path) => (
+          {/* Tab bar */}
           <Box
-            key={path}
             sx={{
-              flex: 1,
-              display: activeTab === path ? 'flex' : 'none',
-              flexDirection: 'column',
-              minHeight: 0,
+              display: 'flex',
+              alignItems: 'stretch',
+              borderBottom: '1px solid',
+              borderColor: 'divider',
+              bgcolor: 'background.default',
+              overflowX: 'auto',
+              flexShrink: 0,
+              '&::-webkit-scrollbar': { height: 3 },
+              '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(0,0,0,0.15)', borderRadius: 2 },
             }}
           >
-            {/* File path breadcrumb */}
+            {openFileTabs.map((path) => (
+              <FileTab
+                key={path}
+                active={activeTab === path}
+                label={fileName(path)}
+                onClick={() => setActiveTab(path)}
+                onClose={(e) => closeTab(path, e)}
+              />
+            ))}
+          </Box>
+
+          {/* Tab content — all mounted, only active one is visible */}
+          {openFileTabs.map((path) => (
             <Box
+              key={path}
               sx={{
-                px: 2,
-                py: 0.75,
-                borderBottom: '1px solid',
-                borderColor: 'divider',
-                bgcolor: 'background.paper',
-                flexShrink: 0,
+                flex: 1,
+                display: activeTab === path ? 'flex' : 'none',
+                flexDirection: 'column',
+                minHeight: 0,
               }}
             >
-              <Typography
-                variant="caption"
+              {/* Path breadcrumb */}
+              <Box
                 sx={{
-                  fontFamily: '"JetBrains Mono", monospace',
-                  color: 'text.secondary',
-                  fontSize: '0.7rem',
+                  px: 2,
+                  py: 0.75,
+                  borderBottom: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: 'background.paper',
+                  flexShrink: 0,
                 }}
               >
-                {path.replace(/\\/g, '/')}
-              </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontFamily: '"JetBrains Mono", monospace',
+                    color: 'text.secondary',
+                    fontSize: '0.7rem',
+                  }}
+                >
+                  {path.replace(/\\/g, '/')}
+                </Typography>
+              </Box>
+
+              {activeWsId && (
+                <FilePreviewPanel
+                  workspaceId={activeWsId}
+                  absolutePath={path}
+                  scrollToLine={scrollTargets[path]}
+                  isActive={activeTab === path}
+                  onNavigate={handleNavigate}
+                />
+              )}
             </Box>
-
-            {activeWsId && (
-              <FilePreviewPanel
-                workspaceId={activeWsId}
-                absolutePath={path}
-              />
-            )}
-          </Box>
-        ))}
-
-        {/* Empty state when a file tab is active but workspace isn't loaded yet */}
-        {isFileTab && !activeWsId && (
-          <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Typography variant="caption" color="text.secondary">No workspace loaded.</Typography>
-          </Box>
-        )}
-      </Box>
+          ))}
+        </Box>
+        </>
+      )}
     </Box>
   );
 }
 
-interface TabProps {
+// ── FileTab ──────────────────────────────────────────────────────────────────
+
+interface FileTabProps {
   active: boolean;
   label: string;
-  icon?: React.ReactNode;
   onClick: () => void;
-  onClose?: (e: React.MouseEvent) => void;
+  onClose: (e: React.MouseEvent) => void;
 }
 
-function Tab({ active, label, icon, onClick, onClose }: TabProps) {
+function FileTab({ active, label, onClick, onClose }: FileTabProps) {
   return (
     <Box
       onClick={onClick}
@@ -196,7 +251,9 @@ function Tab({ active, label, icon, onClick, onClose }: TabProps) {
         },
       }}
     >
-      {icon && <Box sx={{ display: 'flex', flexShrink: 0 }}>{icon}</Box>}
+      <Box sx={{ display: 'flex', flexShrink: 0 }}>
+        <InsertDriveFileOutlinedIcon sx={{ fontSize: 13 }} />
+      </Box>
       <Typography
         variant="caption"
         noWrap
@@ -210,24 +267,22 @@ function Tab({ active, label, icon, onClick, onClose }: TabProps) {
       >
         {label}
       </Typography>
-      {onClose && (
-        <Tooltip title="Close" placement="top">
-          <IconButton
-            size="small"
-            onClick={onClose}
-            sx={{
-              p: 0.25,
-              ml: 0.25,
-              flexShrink: 0,
-              color: 'inherit',
-              opacity: 0.5,
-              '&:hover': { opacity: 1, bgcolor: 'rgba(0,0,0,0.08)' },
-            }}
-          >
-            <CloseIcon sx={{ fontSize: 12 }} />
-          </IconButton>
-        </Tooltip>
-      )}
+      <Tooltip title="Close" placement="top">
+        <IconButton
+          size="small"
+          onClick={onClose}
+          sx={{
+            p: 0.25,
+            ml: 0.25,
+            flexShrink: 0,
+            color: 'inherit',
+            opacity: 0.5,
+            '&:hover': { opacity: 1, bgcolor: 'rgba(0,0,0,0.08)' },
+          }}
+        >
+          <CloseIcon sx={{ fontSize: 12 }} />
+        </IconButton>
+      </Tooltip>
     </Box>
   );
 }

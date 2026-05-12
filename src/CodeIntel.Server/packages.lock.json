@@ -22,6 +22,16 @@
         "resolved": "0.27.0",
         "contentHash": "fZOfnsWKx/kaOqCMSkZ2w5ww++/YGq56T8PWst0KjtmXQBthNAuE11HIaxMK5TBD0EWqoCxqlC8oVCOssF4+MQ=="
       },
+      "LLamaSharp.Backend.Vulkan": {
+        "type": "Direct",
+        "requested": "[0.27.0, )",
+        "resolved": "0.27.0",
+        "contentHash": "2arTT3Hlcq+ih8kcQBFRaUtvzPU51UROnHhjwr9wJEygBYG1+ls5SM6qS4YH1OpbczYbzaALY/LjqULhZ5mzUQ==",
+        "dependencies": {
+          "LLamaSharp.Backend.Vulkan.Linux": "0.27.0",
+          "LLamaSharp.Backend.Vulkan.Windows": "0.27.0"
+        }
+      },
       "Microsoft.AspNetCore.SpaProxy": {
         "type": "Direct",
         "requested": "[9.0.0, )",
@@ -116,6 +126,22 @@
         "type": "Transitive",
         "resolved": "2.14.1",
         "contentHash": "lQKvtaTDOXnoVJ20ibTuSIOf2i0uO0MPbDhd1jm238I+U/2ZnRENj0cktKZhtchBMtCUSRQ5v4xBCUbKNmyVMw=="
+      },
+      "LLamaSharp.Backend.Vulkan.Linux": {
+        "type": "Transitive",
+        "resolved": "0.27.0",
+        "contentHash": "lwKvRq4mFBxUtSlPV5cRFnMauK/mwmkRqS1QJa5CXJ031hSkGSu2uVqoOcEiffUdHQE9Oi5MTdD6PYck7061uA==",
+        "dependencies": {
+          "LLamaSharp.Backend.Cpu": "0.27.0"
+        }
+      },
+      "LLamaSharp.Backend.Vulkan.Windows": {
+        "type": "Transitive",
+        "resolved": "0.27.0",
+        "contentHash": "eq2LNJLJ+rJmfFk5rSgFxV8Yer4ZGxNuYmGApUEk5illaj15hwYBmo2cWHq7UKVkbMQ5KZAGq5NkS3LJeMSiZw==",
+        "dependencies": {
+          "LLamaSharp.Backend.Cpu": "0.27.0"
+        }
       },
       "Microsoft.Bcl.AsyncInterfaces": {
         "type": "Transitive",

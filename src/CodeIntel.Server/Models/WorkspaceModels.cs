@@ -1,6 +1,6 @@
 namespace CodeIntel.Server.Models;
 
-public enum Language { CSharp, TypeScript, Java }
+public enum Language { CSharp, TypeScript, Java, Sql }
 
 public record Workspace(
     string Id,
@@ -40,4 +40,11 @@ public record FileContext(
     string RelativePath,
     string Content,
     bool IsExtractedSummary
+);
+
+public record DefinitionLocation(
+    string FilePath,
+    int Line,
+    int Character,
+    string SymbolName
 );
