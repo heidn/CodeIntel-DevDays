@@ -16,6 +16,10 @@ export async function startAnalysis(req: AnalysisRequest): Promise<{ analysisId:
   return data;
 }
 
+export async function cancelAnalysis(analysisId: string): Promise<void> {
+  await apiClient.post(`/analysis/${analysisId}/cancel`);
+}
+
 export function downloadReportUrl(analysisId: string): string {
   return `/api/reports/${analysisId}/download`;
 }

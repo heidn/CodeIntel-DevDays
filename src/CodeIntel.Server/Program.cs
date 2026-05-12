@@ -23,6 +23,7 @@ builder.Services.AddSingleton<IAnalysisResultStore, InMemoryAnalysisResultStore>
 builder.Services.AddSingleton<IPromptTemplateService, PromptTemplateService>();
 builder.Services.AddSingleton<IReportGenerator, ReportGenerator>();
 builder.Services.AddSingleton<IReportWriter, ReportWriter>();
+builder.Services.AddSingleton<IAnalysisCancellationRegistry, AnalysisCancellationRegistry>();
 builder.Services.AddScoped<IContextBuilder, ContextBuilder>();
 builder.Services.AddScoped<IContextRequestHandler, ContextRequestHandler>();
 builder.Services.AddScoped<IAnalysisOrchestrator, InvestigationOrchestrator>();

@@ -67,6 +67,7 @@ export type AnalysisEvent =
   | { type: 'status'; payload: { message: string } }
   | { type: 'completed'; payload: { analysisId: string; durationSeconds: number; findingCount: number } }
   | { type: 'error'; payload: { message: string } }
+  | { type: 'cancelled'; payload: { reason: 'user' | 'timeout' | 'idle' | 'unknown'; message: string } }
   | { type: 'iterationStarted'; payload: { iteration: number; maxIterations: number } }
   | { type: 'contextRequested'; payload: { type: string; target: string } }
   | { type: 'contextFulfilled'; payload: { type: string; target: string; found: boolean } };

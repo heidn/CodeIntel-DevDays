@@ -42,6 +42,9 @@ export default function App() {
         case 'error':
           analysisActions.error(event.payload.message);
           break;
+        case 'cancelled':
+          analysisActions.cancelled(event.payload.reason, event.payload.message);
+          break;
         case 'iterationStarted':
           if (event.payload.iteration > 1)
             analysisActions.setStatus(`Investigation pass ${event.payload.iteration}/${event.payload.maxIterations}`);

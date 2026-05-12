@@ -12,17 +12,20 @@ public class AnalysisController : ControllerBase
     private readonly IAnalysisResultStore _store;
     private readonly IPromptTemplateService _prompts;
     private readonly ILlmService _llm;
+    private readonly IAnalysisCancellationRegistry _cancel;
 
     public AnalysisController(
         IAnalysisOrchestrator orchestrator,
         IAnalysisResultStore store,
         IPromptTemplateService prompts,
-        ILlmService llm)
+        ILlmService llm,
+        IAnalysisCancellationRegistry cancel)
     {
         _orchestrator = orchestrator;
         _store = store;
         _prompts = prompts;
         _llm = llm;
+        _cancel = cancel;
     }
 
     [HttpGet("presets")]
@@ -61,4 +64,13 @@ public class AnalysisController : ControllerBase
     [HttpGet("recent")]
     public IActionResult GetRecent([FromQuery] int count = 20) =>
         Ok(_store.Recent(count));
+
+    [HttpPost("{id}/cancel")]
+    public IActionResult Cancel(Guid id)
+    {
+        var ok = _cancel.Cancel(id);
+        return ok
+            ? Ok(new { cancelled = true })
+            : NotFound(new { error = "Analysis is not currently running." });
+    }
 }

@@ -26,6 +26,9 @@ public static class AnalysisEvents
     public static AnalysisEvent Error(string message) =>
         new("error", new { message });
 
+    public static AnalysisEvent Cancelled(string reason, string message) =>
+        new("cancelled", new { reason, message });
+
     public static AnalysisEvent IterationStarted(int iteration, int maxIterations) =>
         new("iterationStarted", new { iteration, maxIterations });
 

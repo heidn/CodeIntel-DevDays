@@ -22,6 +22,8 @@ import CodeIcon from '@mui/icons-material/CodeOutlined';
 import SubjectIcon from '@mui/icons-material/SubjectOutlined';
 import SaveAltIcon from '@mui/icons-material/SaveAltOutlined';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
+import StopIcon from '@mui/icons-material/StopCircleOutlined';
+import WarningAmberIcon from '@mui/icons-material/WarningAmberOutlined';
 import { useAnalysisStore } from '../stores/analysisStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { downloadReportUrl, saveReport } from '../api/analysis';
@@ -111,6 +113,8 @@ function FindingCard({ finding, index }: { finding: Finding; index: number }) {
   );
 }
 
+const IDLE_WARN_SECONDS = 30;
+
 export default function ResultsView() {
   const runState          = useAnalysisStore((s) => s.runState);
   const statusMessage     = useAnalysisStore((s) => s.statusMessage);
@@ -120,9 +124,13 @@ export default function ResultsView() {
   const fileCount         = useAnalysisStore((s) => s.fileCount);
   const durationSeconds   = useAnalysisStore((s) => s.durationSeconds);
   const errorMessage      = useAnalysisStore((s) => s.errorMessage);
+  const cancelReason      = useAnalysisStore((s) => s.cancelReason);
   const currentAnalysisId = useAnalysisStore((s) => s.currentAnalysisId);
   const analyzedFilePaths = useAnalysisStore((s) => s.analyzedFilePaths);
   const selectedPresetKey = useAnalysisStore((s) => s.selectedPresetKey);
+  const runStartedAt      = useAnalysisStore((s) => s.runStartedAt);
+  const lastTokenAt       = useAnalysisStore((s) => s.lastTokenAt);
+  const requestCancel     = useAnalysisStore((s) => s.requestCancel);
   const reset             = useAnalysisStore((s) => s.reset);
   const workspace         = useWorkspaceStore((s) => s.workspace);
 
@@ -158,11 +166,32 @@ export default function ResultsView() {
     if (runState === 'starting') setActiveTab('output');
   }, [runState]);
 
-  const isActive   = runState === 'starting' || runState === 'building' || runState === 'streaming';
-  const isComplete = runState === 'completed';
-  const isError    = runState === 'error';
+  const isActive     = runState === 'starting' || runState === 'building' || runState === 'streaming';
+  const isCancelling = runState === 'cancelling';
+  const isComplete   = runState === 'completed';
+  const isError      = runState === 'error';
+  const isCancelled  = runState === 'cancelled';
+  const isTerminal   = isComplete || isError || isCancelled;
+  const canSaveOrExport = (isComplete || isCancelled) && !!currentAnalysisId;
 
-  const showCodeTab = isComplete && !!selectedPresetKey && CODE_VIEW_PRESETS.has(selectedPresetKey);
+  // Live elapsed-time tick while running.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!isActive && !isCancelling) return;
+    const i = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(i);
+  }, [isActive, isCancelling]);
+
+  const elapsedSec = runStartedAt && (isActive || isCancelling)
+    ? Math.floor((nowMs - runStartedAt) / 1000)
+    : 0;
+
+  const idleSec = lastTokenAt && isActive
+    ? Math.floor((nowMs - lastTokenAt) / 1000)
+    : 0;
+  const showIdleWarn = isActive && idleSec >= IDLE_WARN_SECONDS;
+
+  const showCodeTab = (isComplete || isCancelled) && !!selectedPresetKey && CODE_VIEW_PRESETS.has(selectedPresetKey);
 
   const displayText = streamedText
     .replace(/<finding>[\s\S]*?<\/finding>/g, '')
@@ -209,20 +238,46 @@ export default function ResultsView() {
           {isActive && (
             <Chip
               size="small"
-              label={statusMessage || 'running'}
+              label={`${statusMessage || 'running'} · ${elapsedSec}s`}
               sx={{ bgcolor: 'rgba(79,70,229,0.08)', color: 'primary.main', fontFamily: '"JetBrains Mono", monospace' }}
+            />
+          )}
+          {isCancelling && (
+            <Chip
+              size="small"
+              label={`cancelling… · ${elapsedSec}s`}
+              sx={{ bgcolor: 'rgba(202,138,4,0.08)', color: 'warning.main', fontFamily: '"JetBrains Mono", monospace' }}
+            />
+          )}
+          {showIdleWarn && (
+            <Chip
+              size="small"
+              icon={<WarningAmberIcon sx={{ fontSize: 14 }} />}
+              label={`no output for ${idleSec}s`}
+              sx={{ bgcolor: 'rgba(202,138,4,0.10)', color: 'warning.main', fontFamily: '"JetBrains Mono", monospace' }}
             />
           )}
           {isComplete && (
             <Chip
               size="small"
-              label={`${durationSeconds.toFixed(1)}s • ${findings.length} ${findings.length === 1 ? 'finding' : 'findings'}`}
+              label={`${durationSeconds.toFixed(1)}s · ${findings.length} ${findings.length === 1 ? 'finding' : 'findings'}`}
               sx={{ bgcolor: 'rgba(22,163,74,0.08)', color: 'success.main', fontFamily: '"JetBrains Mono", monospace' }}
+            />
+          )}
+          {isCancelled && (
+            <Chip
+              size="small"
+              label={`cancelled${cancelReason && cancelReason !== 'user' ? ` (${cancelReason})` : ''} · ${findings.length} ${findings.length === 1 ? 'finding' : 'findings'}`}
+              sx={{
+                bgcolor: cancelReason === 'user' ? 'rgba(100,116,139,0.10)' : 'rgba(202,138,4,0.10)',
+                color:   cancelReason === 'user' ? 'text.secondary' : 'warning.main',
+                fontFamily: '"JetBrains Mono", monospace',
+              }}
             />
           )}
           {contextTokens > 0 && (
             <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"JetBrains Mono", monospace' }}>
-              {fileCount} {fileCount === 1 ? 'file' : 'files'} • ~{contextTokens.toLocaleString()} tokens
+              {fileCount} {fileCount === 1 ? 'file' : 'files'} · ~{contextTokens.toLocaleString()} tokens
             </Typography>
           )}
 
@@ -256,7 +311,19 @@ export default function ResultsView() {
         </Stack>
 
         <Stack direction="row" spacing={1}>
-          {isComplete && currentAnalysisId && (
+          {(isActive || isCancelling) && (
+            <Button
+              size="small"
+              color="warning"
+              variant="outlined"
+              startIcon={<StopIcon sx={{ fontSize: 16 }} />}
+              onClick={requestCancel}
+              disabled={isCancelling}
+            >
+              {isCancelling ? 'Cancelling…' : 'Cancel'}
+            </Button>
+          )}
+          {canSaveOrExport && (
             <>
               <Tooltip title="Copy raw output">
                 <IconButton size="small" onClick={() => copyToClipboard(streamedText, 'Output')}>
@@ -276,14 +343,14 @@ export default function ResultsView() {
                 size="small"
                 variant="outlined"
                 startIcon={<DownloadIcon sx={{ fontSize: 16 }} />}
-                href={downloadReportUrl(currentAnalysisId)}
+                href={downloadReportUrl(currentAnalysisId!)}
                 target="_blank"
               >
                 Export MD
               </Button>
             </>
           )}
-          {(isComplete || isError) && (
+          {isTerminal && (
             <Tooltip title="Reset">
               <IconButton size="small" onClick={reset}>
                 <RestartAltIcon sx={{ fontSize: 16 }} />
@@ -294,7 +361,7 @@ export default function ResultsView() {
       </Stack>
 
       {/* Save panel — appears under header when user clicks Save to repo */}
-      {savePanelOpen && isComplete && (
+      {savePanelOpen && canSaveOrExport && (
         <Box
           sx={{
             px: 3,
@@ -466,12 +533,20 @@ export default function ResultsView() {
               </Box>
             )}
             {isError && errorMessage && (
-              <Alert severity="error" sx={{ fontSize: '0.8125rem' }}>{errorMessage}</Alert>
+              <Alert severity="error" sx={{ fontSize: '0.8125rem', mb: 1 }}>{errorMessage}</Alert>
             )}
-            {(isActive || isComplete) && (
+            {isCancelled && errorMessage && (
+              <Alert
+                severity={cancelReason === 'user' ? 'info' : 'warning'}
+                sx={{ fontSize: '0.8125rem', mb: 1 }}
+              >
+                {errorMessage}
+              </Alert>
+            )}
+            {(isActive || isCancelling || isComplete || isCancelled) && (
               <>
                 {displayText}
-                {isActive && (
+                {(isActive || isCancelling) && (
                   <Box
                     component="span"
                     sx={{
