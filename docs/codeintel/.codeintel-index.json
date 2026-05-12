@@ -1,7 +1,30 @@
 [
   {
+    "filename": "2026-05-12-trace-both-reportwriterwritetraceasync-21f06a7f.md",
+    "completedAt": "2026-05-12T20:44:49.1547746Z",
+    "kind": "trace",
+    "entryPointFqn": "CodeIntel.Server.Services.ReportWriter.WriteTraceAsync(CodeIntel.Server.Models.TraceResult, CodeIntel.Server.Models.Workspace, string?, System.Threading.CancellationToken)",
+    "direction": "Both",
+    "nodeCount": 20,
+    "depth": 2,
+    "truncated": false,
+    "durationSeconds": 187.1346014
+  },
+  {
+    "filename": "2026-05-12-trace-callees-reportwriterwritetraceasync-12dfe80f.md",
+    "completedAt": "2026-05-12T20:20:52.9500889Z",
+    "kind": "trace",
+    "entryPointFqn": "CodeIntel.Server.Services.ReportWriter.WriteTraceAsync(CodeIntel.Server.Models.TraceResult, CodeIntel.Server.Models.Workspace, string?, System.Threading.CancellationToken)",
+    "direction": "Callees",
+    "nodeCount": 8,
+    "depth": 1,
+    "truncated": false,
+    "durationSeconds": 85.4637472
+  },
+  {
     "filename": "2026-05-12-find-bugs-fbd4c3c8.md",
     "completedAt": "2026-05-12T18:40:04.3523763Z",
+    "kind": "analysis",
     "mode": "Preset",
     "presetKey": "find-bugs",
     "filesAnalyzed": [

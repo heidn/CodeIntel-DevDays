@@ -6,6 +6,7 @@ namespace CodeIntel.Server.Services;
 public interface IReportGenerator
 {
     string GenerateMarkdown(AnalysisResult result, string? referenceFilename = null);
+    string GenerateTraceMarkdown(TraceResult result, string? referenceFilename = null);
 }
 
 public class ReportGenerator : IReportGenerator
@@ -190,6 +191,104 @@ public class ReportGenerator : IReportGenerator
                 "Review the findings above. Verify their accuracy, prioritize them, and propose specific next actions. Reference file paths and line numbers from the findings in your response."),
         };
     }
+
+    public string GenerateTraceMarkdown(TraceResult result, string? referenceFilename = null)
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("# Call-Trail Trace");
+        sb.AppendLine();
+        sb.AppendLine($"**Generated:** {result.CompletedAt:yyyy-MM-dd HH:mm:ss} UTC  ");
+        sb.AppendLine($"**Entry point:** `{result.EntryPointSymbolFqn}`  ");
+        sb.AppendLine($"**Direction:** {result.Direction}  ");
+        sb.AppendLine($"**Depth:** {result.Depth}  ");
+        sb.AppendLine($"**Nodes:** {result.Nodes.Count} · **Edges:** {result.Edges.Count}{(result.Truncated ? " (truncated — per-node fan-out cap hit)" : "")}  ");
+        sb.AppendLine($"**Duration:** {result.Duration.TotalSeconds:F1}s");
+        sb.AppendLine();
+
+        sb.AppendLine("## Call graph");
+        sb.AppendLine();
+        sb.AppendLine("```mermaid");
+        sb.Append(result.Mermaid);
+        if (!result.Mermaid.EndsWith("\n")) sb.AppendLine();
+        sb.AppendLine("```");
+        sb.AppendLine();
+
+        sb.AppendLine("## Node synopses");
+        sb.AppendLine();
+        foreach (var node in result.Nodes)
+        {
+            sb.AppendLine($"### {node.DisplayName}");
+            if (!string.IsNullOrEmpty(node.FilePath))
+            {
+                var loc = node.Line.HasValue
+                    ? $"`{node.FilePath}:{node.Line.Value}`"
+                    : $"`{node.FilePath}`";
+                sb.AppendLine($"**Location:** {loc}  ");
+            }
+            sb.AppendLine($"**Symbol:** `{node.SymbolFqn}`");
+            sb.AppendLine();
+            sb.AppendLine(string.IsNullOrWhiteSpace(node.Synopsis) ? "_(no synopsis)_" : node.Synopsis);
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("---");
+        sb.AppendLine();
+        sb.AppendLine("## Copilot Next Step");
+        sb.AppendLine();
+        var brief = BuildTraceCopilotBrief(result);
+        sb.AppendLine(brief);
+        sb.AppendLine();
+        if (!string.IsNullOrEmpty(referenceFilename))
+        {
+            sb.AppendLine("Reference this file in Copilot Chat:");
+            sb.AppendLine();
+            sb.AppendLine("```text");
+            sb.AppendLine($"#file:{referenceFilename}");
+            sb.AppendLine("```");
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
+
+    private static string BuildTraceCopilotBrief(TraceResult r) => r.Direction switch
+    {
+        TraceDirection.Callers => $"""
+            The call graph above shows what currently invokes `{r.EntryPointSymbolFqn}`.
+            Ask Copilot:
+
+            ```text
+            Using the call graph and per-node synopses above, identify the most likely caller
+            chain for a bug where {r.EntryPointSymbolFqn.Split('.').Last()} produces an unexpected result.
+            For each suspicious caller, name the input or branch that would route through it.
+            ```
+            """,
+
+        TraceDirection.Callees => $"""
+            The call graph above shows what `{r.EntryPointSymbolFqn}` does internally.
+            Ask Copilot:
+
+            ```text
+            Using the call graph and per-node synopses above, produce a one-page developer-facing
+            overview of {r.EntryPointSymbolFqn.Split('.').Last()}: what it does, what it touches
+            (DBs, files, external services), and any risks or surprises a new dev should know.
+            ```
+            """,
+
+        TraceDirection.Both => $"""
+            The call graph above shows both what invokes `{r.EntryPointSymbolFqn}` and what it
+            calls internally. Ask Copilot:
+
+            ```text
+            Using the bidirectional call graph and per-node synopses above, write a focused
+            change-impact analysis: if I modify the behavior of {r.EntryPointSymbolFqn.Split('.').Last()},
+            which callers are affected, and which downstream operations might break?
+            ```
+            """,
+
+        _ => "Reference the call graph and per-node synopses above in Copilot Chat to dig deeper.",
+    };
 
     private static string CodeLang(string? filePath) =>
         Path.GetExtension(filePath)?.ToLowerInvariant() switch

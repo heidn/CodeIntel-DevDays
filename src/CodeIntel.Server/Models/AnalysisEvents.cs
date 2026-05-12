@@ -37,4 +37,10 @@ public static class AnalysisEvents
 
     public static AnalysisEvent ContextFulfilled(string type, string target, bool found) =>
         new("contextFulfilled", new { type, target, found });
+
+    public static AnalysisEvent TraceGraphReady(Guid traceId, string entryPointFqn, int nodeCount, int edgeCount, bool truncated) =>
+        new("traceGraphReady", new { traceId, entryPointFqn, nodeCount, edgeCount, truncated });
+
+    public static AnalysisEvent TraceNodeSynopsis(string nodeId, string synopsis) =>
+        new("traceNodeSynopsis", new { nodeId, synopsis });
 }

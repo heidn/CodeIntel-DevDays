@@ -1,0 +1,72 @@
+namespace CodeIntel.Server.Models;
+
+public enum TraceDirection
+{
+    Callers,
+    Callees,
+    Both,
+}
+
+public enum EdgeKind
+{
+    Calls,
+    CalledBy,
+}
+
+/// <summary>
+/// Identifies the function the user wants to trace from.
+/// Exactly one of MethodName or (FilePath + Line) must be provided.
+/// </summary>
+public record TraceEntryPoint(
+    string? MethodName,
+    string? FilePath,
+    int? Line,
+    int? Character
+);
+
+public record TraceRequest(
+    string WorkspaceId,
+    TraceEntryPoint EntryPoint,
+    TraceDirection Direction,
+    int Depth,
+    Guid? TraceId = null
+);
+
+public record TraceNode(
+    string Id,
+    string SymbolFqn,
+    string DisplayName,
+    string? FilePath,
+    int? Line,
+    string? BodySnippet,
+    string? Synopsis
+);
+
+public record TraceEdge(string FromId, string ToId, EdgeKind Kind);
+
+public record TraceResult(
+    Guid Id,
+    DateTime StartedAt,
+    DateTime CompletedAt,
+    string WorkspaceId,
+    TraceEntryPoint EntryPoint,
+    string EntryPointSymbolFqn,
+    TraceDirection Direction,
+    int Depth,
+    List<TraceNode> Nodes,
+    List<TraceEdge> Edges,
+    string Mermaid,
+    bool Truncated,
+    TimeSpan Duration,
+    string? ReportPath = null
+);
+
+/// <summary>
+/// Output of the pure-graph walk, before LLM synopsis or Mermaid generation.
+/// </summary>
+public record TraceGraph(
+    string EntryPointSymbolFqn,
+    List<TraceNode> Nodes,
+    List<TraceEdge> Edges,
+    bool Truncated
+);

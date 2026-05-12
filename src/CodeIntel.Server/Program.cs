@@ -27,6 +27,9 @@ builder.Services.AddSingleton<IAnalysisCancellationRegistry, AnalysisCancellatio
 builder.Services.AddScoped<IContextBuilder, ContextBuilder>();
 builder.Services.AddScoped<IContextRequestHandler, ContextRequestHandler>();
 builder.Services.AddScoped<IAnalysisOrchestrator, InvestigationOrchestrator>();
+builder.Services.AddSingleton<ITraceResultStore, InMemoryTraceResultStore>();
+builder.Services.AddScoped<ITraceWalker, TraceWalker>();
+builder.Services.AddScoped<ITraceOrchestrator, TraceOrchestrator>();
 
 // --- Web ---
 builder.Services.AddControllers()

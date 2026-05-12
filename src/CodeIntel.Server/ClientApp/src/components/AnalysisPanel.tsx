@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Box, Stack, Typography, IconButton, Tooltip } from '@mui/material';
+import { Box, Stack, Typography, IconButton, Tooltip, ToggleButtonGroup, ToggleButton } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
+import SubjectIcon from '@mui/icons-material/SubjectOutlined';
+import AccountTreeIcon from '@mui/icons-material/AccountTreeOutlined';
 import PromptSelector from './PromptSelector';
 import ResultsView from './ResultsView';
+import TracePanel from './TracePanel';
+import TraceResultsView from './TraceResultsView';
 import FilePreviewPanel from './FilePreviewPanel';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 
@@ -18,6 +22,7 @@ export default function AnalysisPanel() {
   const workspace     = useWorkspaceStore((s) => s.workspace);
   const previewedFile = useWorkspaceStore((s) => s.previewedFile);
 
+  const [paneMode, setPaneMode]         = useState<'analysis' | 'trace'>('analysis');
   const [openFileTabs, setOpenFileTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab]       = useState<string | null>(null);
   const [previewWidth, setPreviewWidth] = useState(560);
@@ -96,12 +101,52 @@ export default function AnalysisPanel() {
           height: '100%',
         }}
       >
+        {/* Mode toggle: Analysis | Trace */}
+        <Stack
+          direction="row"
+          sx={{
+            px: 2,
+            py: 1,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'background.paper',
+            flexShrink: 0,
+            alignItems: 'center',
+            gap: 1,
+          }}
+        >
+          <ToggleButtonGroup
+            value={paneMode}
+            exclusive
+            size="small"
+            onChange={(_, v) => v && setPaneMode(v)}
+            sx={{
+              '& .MuiToggleButton-root': {
+                py: 0.25, px: 1.25,
+                fontSize: '0.72rem',
+                textTransform: 'none',
+                border: '1px solid',
+                borderColor: 'divider',
+                gap: 0.5,
+              },
+            }}
+          >
+            <ToggleButton value="analysis">
+              <SubjectIcon sx={{ fontSize: 14 }} /> Analysis
+            </ToggleButton>
+            <ToggleButton value="trace">
+              <AccountTreeIcon sx={{ fontSize: 14 }} /> Trace
+            </ToggleButton>
+          </ToggleButtonGroup>
+        </Stack>
+
         <Stack
           sx={{ flex: 1, minHeight: 0 }}
           divider={<Box sx={{ borderBottom: '1px solid', borderColor: 'divider' }} />}
         >
-          <PromptSelector />
-          <ResultsView />
+          {paneMode === 'analysis'
+            ? (<><PromptSelector /><ResultsView /></>)
+            : (<><TracePanel /><TraceResultsView /></>)}
         </Stack>
       </Box>
 

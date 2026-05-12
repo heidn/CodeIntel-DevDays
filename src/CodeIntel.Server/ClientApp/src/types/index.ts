@@ -70,7 +70,9 @@ export type AnalysisEvent =
   | { type: 'cancelled'; payload: { reason: 'user' | 'timeout' | 'idle' | 'unknown'; message: string } }
   | { type: 'iterationStarted'; payload: { iteration: number; maxIterations: number } }
   | { type: 'contextRequested'; payload: { type: string; target: string } }
-  | { type: 'contextFulfilled'; payload: { type: string; target: string; found: boolean } };
+  | { type: 'contextFulfilled'; payload: { type: string; target: string; found: boolean } }
+  | { type: 'traceGraphReady'; payload: { traceId: string; entryPointFqn: string; nodeCount: number; edgeCount: number; truncated: boolean } }
+  | { type: 'traceNodeSynopsis'; payload: { nodeId: string; synopsis: string } };
 
 export interface LlmStatus {
   llmReady: boolean;
@@ -83,4 +85,58 @@ export interface DefinitionLocation {
   line: number;
   character: number;
   symbolName: string;
+}
+
+// ── Trace ─────────────────────────────────────────────────────────────────────
+
+export type TraceDirection = 'callers' | 'callees' | 'both';
+export type EdgeKind       = 'calls'   | 'calledBy';
+export type CancelReason   = 'user' | 'timeout' | 'idle' | 'unknown';
+
+export interface TraceEntryPoint {
+  methodName: string | null;
+  filePath:   string | null;
+  line:       number | null;
+  character:  number | null;
+}
+
+export interface TraceRequest {
+  workspaceId: string;
+  entryPoint:  TraceEntryPoint;
+  direction:   TraceDirection;
+  depth:       number;
+  traceId?:    string | null;
+}
+
+export interface TraceNode {
+  id:           string;
+  symbolFqn:    string;
+  displayName:  string;
+  filePath:     string | null;
+  line:         number | null;
+  bodySnippet:  string | null;
+  synopsis:     string | null;
+}
+
+export interface TraceEdge {
+  fromId: string;
+  toId:   string;
+  kind:   EdgeKind;
+}
+
+export interface TraceResult {
+  id:                   string;
+  startedAt:            string;
+  completedAt:          string;
+  workspaceId:          string;
+  entryPoint:           TraceEntryPoint;
+  entryPointSymbolFqn:  string;
+  direction:            TraceDirection;
+  depth:                number;
+  nodes:                TraceNode[];
+  edges:                TraceEdge[];
+  mermaid:              string;
+  truncated:            boolean;
+  duration:             string;
+  reportPath:           string | null;
 }
