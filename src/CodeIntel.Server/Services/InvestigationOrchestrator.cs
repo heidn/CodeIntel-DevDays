@@ -139,6 +139,20 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
                 _logger.LogInformation("Iteration {N}: {Findings} findings, {Requests} context requests",
                     iteration + 1, parser.Findings.Count, contextRequests.Count);
 
+                if (parser.MalformedFindings.Count > 0)
+                {
+                    var firstError = parser.MalformedFindings[0].Error;
+                    _logger.LogWarning(
+                        "Iteration {N}: parser dropped {Count} malformed <finding> JSON block(s). First error: {Error}",
+                        iteration + 1, parser.MalformedFindings.Count, firstError);
+                }
+                if (parser.IncompleteFindingCount > 0)
+                {
+                    _logger.LogWarning(
+                        "Iteration {N}: parser dropped {Count} incomplete <finding> tag(s) (no closing tag in stream). Model likely truncated mid-finding.",
+                        iteration + 1, parser.IncompleteFindingCount);
+                }
+
                 if (contextRequests.Count == 0 || parser.IsDone)
                     break;
 

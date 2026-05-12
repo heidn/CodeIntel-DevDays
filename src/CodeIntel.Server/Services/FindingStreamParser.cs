@@ -14,10 +14,19 @@ public class FindingStreamParser
     private readonly StringBuilder _buffer = new();
     private readonly List<Finding> _findings = new();
     private readonly List<ContextRequest> _contextRequests = new();
+    private readonly List<ParseFailure> _malformed = new();
 
     private static readonly Regex FindingRegex = new(
         @"<finding>(?<json>.*?)</finding>",
         RegexOptions.Compiled | RegexOptions.Singleline);
+
+    private static readonly Regex FindingOpenRegex = new(
+        @"<finding>",
+        RegexOptions.Compiled);
+
+    private static readonly Regex FindingCloseRegex = new(
+        @"</finding>",
+        RegexOptions.Compiled);
 
     private static readonly Regex ContextRequestRegex = new(
         @"<request_context\s+type=""(?<type>[^""]+)"">(?<target>.*?)</request_context>",
@@ -25,8 +34,26 @@ public class FindingStreamParser
 
     public IReadOnlyList<Finding> Findings => _findings;
     public IReadOnlyList<ContextRequest> ContextRequests => _contextRequests;
+    public IReadOnlyList<ParseFailure> MalformedFindings => _malformed;
     public string RawOutput => _buffer.ToString();
     public bool IsDone { get; private set; }
+
+    /// <summary>
+    /// Number of `&lt;finding&gt;` openings that never received a matching `&lt;/finding&gt;`
+    /// closing tag in the stream. These are silently lost — the orchestrator should log this.
+    /// </summary>
+    public int IncompleteFindingCount
+    {
+        get
+        {
+            var text = _buffer.ToString();
+            var opens = FindingOpenRegex.Matches(text).Count;
+            var closes = FindingCloseRegex.Matches(text).Count;
+            return Math.Max(0, opens - closes);
+        }
+    }
+
+    public record ParseFailure(string Snippet, string Error);
 
     /// <summary>
     /// Append a chunk of streaming text. Returns any newly-completed findings.
@@ -43,14 +70,18 @@ public class FindingStreamParser
         // emit new findings incrementally
         var findingMatches = FindingRegex.Matches(text);
         var newFindings = new List<Finding>();
-        for (int i = _findings.Count; i < findingMatches.Count; i++)
+        for (int i = _findings.Count + _malformed.Count; i < findingMatches.Count; i++)
         {
             var json = findingMatches[i].Groups["json"].Value.Trim();
-            var finding = TryParseFinding(json);
+            var (finding, error) = TryParseFinding(json);
             if (finding != null)
             {
                 _findings.Add(finding);
                 newFindings.Add(finding);
+            }
+            else
+            {
+                _malformed.Add(new ParseFailure(Truncate(json, 200), error ?? "(unknown)"));
             }
         }
 
@@ -67,7 +98,7 @@ public class FindingStreamParser
         return newFindings;
     }
 
-    private static Finding? TryParseFinding(string json)
+    private static (Finding? finding, string? error) TryParseFinding(string json)
     {
         try
         {
@@ -77,7 +108,7 @@ public class FindingStreamParser
             var severityStr = GetString(root, "severity") ?? "info";
             var severity = ParseSeverity(severityStr);
 
-            return new Finding(
+            var finding = new Finding(
                 Severity: severity,
                 Title: GetString(root, "title") ?? "(no title)",
                 Description: GetString(root, "description") ?? "",
@@ -85,12 +116,16 @@ public class FindingStreamParser
                 LineNumber: GetInt(root, "lineNumber"),
                 CodeSnippet: GetString(root, "codeSnippet")
             );
+            return (finding, null);
         }
-        catch
+        catch (Exception ex)
         {
-            return null;
+            return (null, ex.Message);
         }
     }
+
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : s.Substring(0, max) + "...";
 
     private static string? GetString(JsonElement el, string name)
     {
