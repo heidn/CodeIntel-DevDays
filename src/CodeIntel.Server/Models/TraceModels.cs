@@ -14,6 +14,18 @@ public enum EdgeKind
 }
 
 /// <summary>
+/// Visual category for a node — controls Mermaid shape and color.
+/// </summary>
+public enum NodeKind
+{
+    Normal,
+    /// <summary>EF Core / raw SQL database access (DbContext, DbSet, FromSql, SaveChanges).</summary>
+    DbAccess,
+    /// <summary>Outbound HTTP call (HttpClient, IHttpClientFactory, RestSharp, etc.).</summary>
+    HttpCall,
+}
+
+/// <summary>
 /// Identifies the function the user wants to trace from.
 /// Exactly one of MethodName or (FilePath + Line) must be provided.
 /// </summary>
@@ -39,7 +51,8 @@ public record TraceNode(
     string? FilePath,
     int? Line,
     string? BodySnippet,
-    string? Synopsis
+    string? Synopsis,
+    NodeKind Kind = NodeKind.Normal
 );
 
 public record TraceEdge(string FromId, string ToId, EdgeKind Kind);

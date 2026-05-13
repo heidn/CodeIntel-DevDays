@@ -18,6 +18,15 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import SaveAltIcon from '@mui/icons-material/SaveAltOutlined';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
 import StopIcon from '@mui/icons-material/StopCircleOutlined';
+import StorageIcon from '@mui/icons-material/StorageOutlined';
+import CloudIcon from '@mui/icons-material/CloudOutlined';
+import type { NodeKind } from '../types';
+
+const NODE_KIND_STYLE: Record<NodeKind, { label: string; bg: string; color: string; icon: typeof StorageIcon } | null> = {
+  normal: null,
+  dbAccess: { label: 'DB',   bg: 'rgba(59,130,246,0.10)', color: '#93c5fd', icon: StorageIcon },
+  httpCall: { label: 'HTTP', bg: 'rgba(34,197,94,0.10)',  color: '#86efac', icon: CloudIcon   },
+};
 import { useTraceStore } from '../stores/traceStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { getTrace, saveTraceReport } from '../api/trace';
@@ -324,6 +333,26 @@ export default function TraceResultsView() {
                     <Typography variant="body2" sx={{ fontWeight: 600, fontFamily: '"JetBrains Mono", monospace' }}>
                       {node.displayName}
                     </Typography>
+                    {(() => {
+                      const ks = NODE_KIND_STYLE[node.kind];
+                      if (!ks) return null;
+                      const Icon = ks.icon;
+                      return (
+                        <Chip
+                          size="small"
+                          icon={<Icon sx={{ fontSize: 12 }} />}
+                          label={ks.label}
+                          sx={{
+                            height: 18,
+                            fontSize: '0.625rem',
+                            fontFamily: '"JetBrains Mono", monospace',
+                            bgcolor: ks.bg,
+                            color: ks.color,
+                            '& .MuiChip-icon': { color: ks.color, ml: 0.5 },
+                          }}
+                        />
+                      );
+                    })()}
                     {node.filePath && (
                       <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"JetBrains Mono", monospace', ml: 'auto', fontSize: '0.6875rem' }}>
                         {node.filePath.split(/[\\/]/).pop()}{node.line ? `:${node.line}` : ''}

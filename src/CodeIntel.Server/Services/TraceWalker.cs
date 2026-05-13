@@ -58,12 +58,19 @@ public class TraceWalker : ITraceWalker
         var entryFqn = entryMethod.ToDisplayString();
 
         // Phase A: BFS in symbol space — collect symbols by FQN + edges as (fromFqn,toFqn,kind).
+        // `visited` is the single cycle-guard: a node is marked visited the moment it is first
+        // discovered, before it is enqueued.  This means:
+        //   (a) duplicate queue entries (diamond patterns) are impossible — once a node is in
+        //       visited it can still receive incoming edges but will never be enqueued again.
+        //   (b) true call-graph cycles (A→B→A) produce a back-edge in edgeTuples (which becomes
+        //       a Mermaid cycle arrow) but do not re-expand A.
         var symbolByFqn = new Dictionary<string, IMethodSymbol>(StringComparer.Ordinal);
         var edgeTuples = new List<(string from, string to, EdgeKind kind)>();
-        var visitedForExpand = new HashSet<string>(StringComparer.Ordinal);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
         var truncated = false;
 
         symbolByFqn[entryFqn] = entryMethod;
+        visited.Add(entryFqn);
 
         var queue = new Queue<(IMethodSymbol sym, int curDepth)>();
         queue.Enqueue((entryMethod, 0));
@@ -74,7 +81,7 @@ public class TraceWalker : ITraceWalker
             var (cur, curDepth) = queue.Dequeue();
             var curFqn = cur.ToDisplayString();
 
-            if (!visitedForExpand.Add(curFqn)) continue;
+            // Already past the depth limit — record the node but don't expand it.
             if (curDepth >= depth) continue;
 
             if (direction is TraceDirection.Callers or TraceDirection.Both)
@@ -89,9 +96,11 @@ public class TraceWalker : ITraceWalker
                     added++;
 
                     var callerFqn = m.ToDisplayString();
+                    // Always record the edge (including back-edges from cycles).
                     edgeTuples.Add((callerFqn, curFqn, EdgeKind.CalledBy));
 
-                    if (!symbolByFqn.ContainsKey(callerFqn))
+                    // Only enqueue if not yet visited — prevents cycles and diamond re-expansion.
+                    if (visited.Add(callerFqn))
                     {
                         symbolByFqn[callerFqn] = m;
                         queue.Enqueue((m, curDepth + 1));
@@ -110,9 +119,11 @@ public class TraceWalker : ITraceWalker
                     added++;
 
                     var calleeFqn = callee.ToDisplayString();
+                    // Always record the edge (including back-edges from cycles).
                     edgeTuples.Add((curFqn, calleeFqn, EdgeKind.Calls));
 
-                    if (!symbolByFqn.ContainsKey(calleeFqn))
+                    // Only enqueue if not yet visited — prevents cycles and diamond re-expansion.
+                    if (visited.Add(calleeFqn))
                     {
                         symbolByFqn[calleeFqn] = callee;
                         queue.Enqueue((callee, curDepth + 1));
@@ -150,7 +161,8 @@ public class TraceWalker : ITraceWalker
                 FilePath: filePath,
                 Line: line,
                 BodySnippet: body,
-                Synopsis: null));
+                Synopsis: null,
+                Kind: InferNodeKind(sym)));
         }
 
         // Phase C: rewrite edges with node ids, drop duplicates.
@@ -303,6 +315,53 @@ public class TraceWalker : ITraceWalker
             or MethodKind.LocalFunction
         && m.Locations.Any(l => l.IsInSource);
 
+    /// <summary>
+    /// Infers the visual category of a node from its type hierarchy and method name.
+    /// Used exclusively for Mermaid rendering — does not affect graph structure.
+    /// </summary>
+    private static NodeKind InferNodeKind(IMethodSymbol m)
+    {
+        var containingType = m.ContainingType;
+        if (containingType is null) return NodeKind.Normal;
+
+        // Walk the inheritance chain to detect DbContext / DbSet<T>.
+        var t = containingType;
+        while (t is not null)
+        {
+            var name = t.Name;
+            if (name is "DbContext" or "IdentityDbContext" or "DbSet") return NodeKind.DbAccess;
+            t = t.BaseType;
+        }
+
+        // Interface-based: IQueryable<T>, DbSet<T> generic form.
+        foreach (var iface in containingType.AllInterfaces)
+        {
+            if (iface.Name is "IQueryable" or "IAsyncQueryProvider") return NodeKind.DbAccess;
+        }
+
+        // Method-name heuristics for EF Core extension methods (ToListAsync, FromSqlRaw, etc.)
+        if (m.Name is "SaveChanges" or "SaveChangesAsync"
+                   or "FromSqlRaw" or "FromSqlInterpolated" or "FromSql"
+                   or "ExecuteSqlRaw" or "ExecuteSqlInterpolated" or "ExecuteSqlRawAsync")
+            return NodeKind.DbAccess;
+
+        // HttpClient and IHttpClientFactory.
+        if (containingType.Name is "HttpClient" or "HttpMessageHandler" or "IHttpClientFactory")
+            return NodeKind.HttpCall;
+
+        // Common HTTP method-name patterns on typed clients or wrappers.
+        if (m.Name is "GetAsync" or "PostAsync" or "PutAsync" or "PatchAsync"
+                   or "DeleteAsync" or "SendAsync" or "GetStringAsync"
+                   or "GetByteArrayAsync" or "GetStreamAsync")
+        {
+            // Check if the containing type has HttpClient as a field/property via naming convention.
+            // Fallback: flag any method with these names that isn't in source (likely a BCL call).
+            if (!m.Locations.Any(l => l.IsInSource)) return NodeKind.HttpCall;
+        }
+
+        return NodeKind.Normal;
+    }
+
     public string BuildMermaid(TraceGraph graph, TraceDirection direction)
     {
         if (graph.Nodes.Count == 0)
@@ -311,11 +370,20 @@ public class TraceWalker : ITraceWalker
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("flowchart TD");
 
-        // Node declarations — quote the label so Mermaid handles dots/spaces.
+        // Node declarations — shape varies by NodeKind:
+        //   Normal   → ["Label"]   rectangle
+        //   DbAccess → [("Label")] cylinder (database icon)
+        //   HttpCall → {{"Label"}} hexagon  (external I/O)
         foreach (var node in graph.Nodes)
         {
             var safeLabel = node.DisplayName.Replace("\"", "'");
-            sb.AppendLine($"  {node.Id}[\"{safeLabel}\"]");
+            var decl = node.Kind switch
+            {
+                NodeKind.DbAccess => $"[(\"{safeLabel}\")]",
+                NodeKind.HttpCall => $"{{\"{safeLabel}\"}}",
+                _                 => $"[\"{safeLabel}\"]",
+            };
+            sb.AppendLine($"  {node.Id}{decl}");
         }
 
         // Edge declarations — direction-aware arrows.
@@ -329,6 +397,20 @@ public class TraceWalker : ITraceWalker
         var entry = graph.Nodes.FirstOrDefault(n => n.SymbolFqn == graph.EntryPointSymbolFqn);
         if (entry is not null)
             sb.AppendLine($"  style {entry.Id} fill:#7c3aed,stroke:#4f46e5,color:#fff");
+
+        // Colour-code DB and HTTP nodes so they stand out.
+        var dbNodes   = graph.Nodes.Where(n => n.Kind == NodeKind.DbAccess).ToList();
+        var httpNodes = graph.Nodes.Where(n => n.Kind == NodeKind.HttpCall).ToList();
+        if (dbNodes.Count > 0)
+        {
+            sb.AppendLine("  classDef db fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd");
+            sb.AppendLine($"  class {string.Join(',', dbNodes.Select(n => n.Id))} db");
+        }
+        if (httpNodes.Count > 0)
+        {
+            sb.AppendLine("  classDef http fill:#1f2d1f,stroke:#22c55e,color:#86efac");
+            sb.AppendLine($"  class {string.Join(',', httpNodes.Select(n => n.Id))} http");
+        }
 
         if (graph.Truncated)
             sb.AppendLine("  classDef truncated stroke-dasharray: 5 5");

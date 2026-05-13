@@ -91,6 +91,7 @@ export interface DefinitionLocation {
 
 export type TraceDirection = 'callers' | 'callees' | 'both';
 export type EdgeKind       = 'calls'   | 'calledBy';
+export type NodeKind       = 'normal'  | 'dbAccess' | 'httpCall';
 export type CancelReason   = 'user' | 'timeout' | 'idle' | 'unknown';
 
 export interface TraceEntryPoint {
@@ -116,6 +117,7 @@ export interface TraceNode {
   line:         number | null;
   bodySnippet:  string | null;
   synopsis:     string | null;
+  kind:         NodeKind;
 }
 
 export interface TraceEdge {
