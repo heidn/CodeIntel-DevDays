@@ -6,6 +6,7 @@ interface WorkspaceState {
   selectedFiles: Set<string>;
   previewedFile: string | null;
   pinnedSnippet: PinnedSnippet | null;
+  paneMode: 'analysis' | 'trace';
 
   setWorkspace: (ws: Workspace | null) => void;
   toggleFile: (absolutePath: string) => void;
@@ -13,6 +14,7 @@ interface WorkspaceState {
   clearSelection: () => void;
   setPreviewedFile: (absolutePath: string | null) => void;
   pinSnippet: (snippet: PinnedSnippet | null) => void;
+  setPaneMode: (mode: 'analysis' | 'trace') => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
@@ -20,6 +22,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   selectedFiles: new Set(),
   previewedFile: null,
   pinnedSnippet: null,
+  paneMode: 'analysis',
 
   setWorkspace: (ws) => set({ workspace: ws, selectedFiles: new Set(), previewedFile: null, pinnedSnippet: null }),
 
@@ -42,4 +45,5 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   clearSelection: () => set({ selectedFiles: new Set() }),
   setPreviewedFile: (absolutePath) => set({ previewedFile: absolutePath }),
   pinSnippet: (snippet) => set({ pinnedSnippet: snippet }),
+  setPaneMode: (mode) => set({ paneMode: mode }),
 }));

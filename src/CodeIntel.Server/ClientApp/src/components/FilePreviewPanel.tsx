@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Typography, CircularProgress, Alert, Button, IconButton, Tooltip } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
+import AccountTreeIcon from '@mui/icons-material/AccountTreeOutlined';
 import { useQuery } from '@tanstack/react-query';
 import { getFile, getDefinition } from '../api/workspace';
 import { useWorkspaceStore } from '../stores/workspaceStore';
+import { useTraceStore } from '../stores/traceStore';
 import type { PinnedSnippet } from '../types';
 
 interface Props {
@@ -62,7 +64,12 @@ export default function FilePreviewPanel({
 
   const [selStart, setSelStart] = useState<number | null>(null);
   const [selEnd,   setSelEnd]   = useState<number | null>(null);
-  const pinSnippet = useWorkspaceStore((s) => s.pinSnippet);
+  const [clickSymbol, setClickSymbol] = useState<{ line: number; character: number; word: string } | null>(null);
+  const [tracing, setTracing] = useState(false);
+
+  const pinSnippet       = useWorkspaceStore((s) => s.pinSnippet);
+  const setPaneMode      = useWorkspaceStore((s) => s.setPaneMode);
+  const setEntryPointLocation = useTraceStore((s) => s.setEntryPointLocation);
 
   const codeContainerRef = useRef<HTMLDivElement>(null);
 
@@ -110,13 +117,51 @@ export default function FilePreviewPanel({
     }
     if (e.shiftKey && selStart !== null) {
       setSelEnd(lineNo);
+      setClickSymbol(null); // range selection — clear single-symbol context
     } else {
       setSelStart(lineNo);
       setSelEnd(lineNo);
+      // Capture which word was clicked so we can offer "Trace from here".
+      const offset = caretCharOffset(e.clientX, e.clientY);
+      if (offset !== null) {
+        const w = wordAtOffset(lineText, offset);
+        setClickSymbol(w ? { line: lineNo, character: w.charStart, word: w.word } : null);
+      } else {
+        setClickSymbol(null);
+      }
     }
   };
 
-  const clearSelection = () => { setSelStart(null); setSelEnd(null); };
+  const clearSelection = () => { setSelStart(null); setSelEnd(null); setClickSymbol(null); };
+
+  const baseName = (p: string) => p.replace(/\\/g, '/').split('/').pop() ?? p;
+
+  const handleTraceFromHere = async () => {
+    if (!clickSymbol || !workspaceId) return;
+    setTracing(true);
+    try {
+      const def = await getDefinition(workspaceId, absolutePath, clickSymbol.line, clickSymbol.character);
+      const loc = def
+        ? { filePath: def.filePath, line: def.line, character: def.character, symbolLabel: def.symbolName, fileShortName: baseName(def.filePath) }
+        : { filePath: absolutePath, line: clickSymbol.line, character: clickSymbol.character, symbolLabel: clickSymbol.word, fileShortName: baseName(absolutePath) };
+      setEntryPointLocation(loc);
+      setPaneMode('trace');
+      clearSelection();
+    } catch {
+      // Fallback: use the clicked position even without Roslyn resolution.
+      setEntryPointLocation({
+        filePath: absolutePath,
+        line: clickSymbol.line,
+        character: clickSymbol.character,
+        symbolLabel: clickSymbol.word,
+        fileShortName: baseName(absolutePath),
+      });
+      setPaneMode('trace');
+      clearSelection();
+    } finally {
+      setTracing(false);
+    }
+  };
 
   const handlePin = () => {
     if (!hasSelection) return;
@@ -175,6 +220,26 @@ export default function FilePreviewPanel({
           >
             Pin to analysis
           </Button>
+          {clickSymbol && selStart === selEnd && (
+            <Button
+              size="small"
+              startIcon={tracing ? <CircularProgress size={12} color="inherit" /> : <AccountTreeIcon sx={{ fontSize: 13 }} />}
+              onClick={handleTraceFromHere}
+              disabled={tracing}
+              sx={{
+                py: 0.25,
+                px: 1,
+                fontSize: '0.7rem',
+                textTransform: 'none',
+                color: 'secondary.main',
+                border: '1px solid rgba(139, 92, 246, 0.5)',
+                borderRadius: 0.5,
+                '&:hover': { bgcolor: 'rgba(139, 92, 246, 0.12)' },
+              }}
+            >
+              Trace from `{clickSymbol.word}`
+            </Button>
+          )}
           <IconButton
             size="small"
             onClick={clearSelection}
@@ -198,8 +263,8 @@ export default function FilePreviewPanel({
         >
           <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: '0.65rem' }}>
             {absolutePath.toLowerCase().endsWith('.cs')
-              ? 'Ctrl+click a symbol to go to definition'
-              : 'Ctrl+click a symbol to find definition'}
+              ? 'Click a line to select · Ctrl+click to go to definition · click a word then "Trace from" to trace'
+              : 'Click a line to select · Ctrl+click to find definition'}
           </Typography>
         </Box>
       )}

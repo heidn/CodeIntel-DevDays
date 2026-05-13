@@ -21,8 +21,8 @@ const MIN_ANALYSIS_WIDTH = 320;
 export default function AnalysisPanel() {
   const workspace     = useWorkspaceStore((s) => s.workspace);
   const previewedFile = useWorkspaceStore((s) => s.previewedFile);
-
-  const [paneMode, setPaneMode]         = useState<'analysis' | 'trace'>('analysis');
+  const paneMode      = useWorkspaceStore((s) => s.paneMode);
+  const setPaneMode   = useWorkspaceStore((s) => s.setPaneMode);
   const [openFileTabs, setOpenFileTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab]       = useState<string | null>(null);
   const [previewWidth, setPreviewWidth] = useState(560);

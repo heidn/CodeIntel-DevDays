@@ -2,6 +2,16 @@ import { create } from 'zustand';
 import type { TraceDirection, TraceNode, TraceEdge, CancelReason } from '../types';
 import { cancelAnalysis } from '../api/analysis';
 
+export interface TraceEntryPointLocation {
+  filePath: string;
+  line: number;
+  character: number;
+  /** Display-only label (e.g. "BuildPrompt"). Backend re-resolves via Roslyn. */
+  symbolLabel: string;
+  /** Short filename for the chip (e.g. "PromptTemplateService.cs"). */
+  fileShortName: string;
+}
+
 export type TraceRunState =
   | 'idle'
   | 'starting'
@@ -15,11 +25,13 @@ export type TraceRunState =
 interface TraceState {
   // inputs (persist between runs)
   entryPointName: string;
+  entryPointLocation: TraceEntryPointLocation | null;
   direction:      TraceDirection;
   depth:          number;
-  setEntryPointName: (s: string) => void;
-  setDirection:      (d: TraceDirection) => void;
-  setDepth:          (n: number) => void;
+  setEntryPointName:     (s: string) => void;
+  setEntryPointLocation: (loc: TraceEntryPointLocation | null) => void;
+  setDirection:          (d: TraceDirection) => void;
+  setDepth:              (n: number) => void;
 
   // run state
   currentTraceId:    string | null;
@@ -49,12 +61,14 @@ interface TraceState {
 }
 
 export const useTraceStore = create<TraceState>((set, get) => ({
-  entryPointName: '',
-  direction:      'callers',
-  depth:          2,
-  setEntryPointName: (s) => set({ entryPointName: s }),
-  setDirection:      (d) => set({ direction: d }),
-  setDepth:          (n) => set({ depth: Math.max(1, Math.min(5, Math.floor(n))) }),
+  entryPointName:     '',
+  entryPointLocation: null,
+  direction:          'callers',
+  depth:              2,
+  setEntryPointName:     (s) => set({ entryPointName: s }),
+  setEntryPointLocation: (loc) => set({ entryPointLocation: loc }),
+  setDirection:          (d) => set({ direction: d }),
+  setDepth:              (n) => set({ depth: Math.max(1, Math.min(5, Math.floor(n))) }),
 
   currentTraceId:  null,
   runState:        'idle',
@@ -72,19 +86,20 @@ export const useTraceStore = create<TraceState>((set, get) => ({
 
   startRun: (traceId) =>
     set({
-      currentTraceId:  traceId,
-      runState:        'starting',
-      statusMessage:   'Starting...',
-      entryPointFqn:   null,
-      nodes:           [],
-      edges:           [],
-      mermaid:         '',
-      truncated:       false,
-      durationSeconds: 0,
-      errorMessage:    null,
-      cancelReason:    null,
-      runStartedAt:    Date.now(),
-      lastEventAt:     Date.now(),
+      currentTraceId:     traceId,
+      runState:           'starting',
+      statusMessage:      'Starting...',
+      entryPointFqn:      null,
+      entryPointLocation: null,
+      nodes:              [],
+      edges:              [],
+      mermaid:            '',
+      truncated:          false,
+      durationSeconds:    0,
+      errorMessage:       null,
+      cancelReason:       null,
+      runStartedAt:       Date.now(),
+      lastEventAt:        Date.now(),
     }),
 
   setStatus: (m) =>
@@ -126,18 +141,19 @@ export const useTraceStore = create<TraceState>((set, get) => ({
 
   reset: () =>
     set({
-      currentTraceId:  null,
-      runState:        'idle',
-      statusMessage:   '',
-      entryPointFqn:   null,
-      nodes:           [],
-      edges:           [],
-      mermaid:         '',
-      truncated:       false,
-      durationSeconds: 0,
-      errorMessage:    null,
-      cancelReason:    null,
-      runStartedAt:    null,
-      lastEventAt:     null,
+      currentTraceId:     null,
+      runState:           'idle',
+      statusMessage:      '',
+      entryPointFqn:      null,
+      entryPointLocation: null,
+      nodes:              [],
+      edges:              [],
+      mermaid:            '',
+      truncated:          false,
+      durationSeconds:    0,
+      errorMessage:       null,
+      cancelReason:       null,
+      runStartedAt:       null,
+      lastEventAt:        null,
     }),
 }));

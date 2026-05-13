@@ -198,15 +198,17 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 - Tightened `find-bugs.md` prompt with anti-hedging + safe-API allowlists (suppresses most of the common Qwen 7B FP classes)
 
 **Call-trail trace mode (v1)**
-- Top-level **Analysis | Trace** toggle in `AnalysisPanel.tsx`
-- `TracePanel.tsx` — entry-point method name input, direction radio (Callers/Callees/Both), depth 1–5, Run button
-- Backend `TraceWalker`: Roslyn BFS for callers (`SymbolFinder.FindCallersAsync`) and callees (new — `SemanticModel` walk of `InvocationExpressionSyntax`/`ObjectCreationExpressionSyntax`); per-node fan-out cap of 8 with `truncated` flag
+- Top-level **Analysis | Trace** toggle in `AnalysisPanel.tsx` (pane mode now lives in `workspaceStore`)
+- `TracePanel.tsx` — entry-point method name input OR location chip (from "Trace from here"), direction radio (Callers/Callees/Both), depth 1–5, Run button
+- **"Trace from here"** in `FilePreviewPanel.tsx`: click a symbol in any open file → sibling button next to "Pin to analysis" → resolves the declaration via `getDefinition`, sets `traceStore.entryPointLocation`, switches the pane to Trace, pre-populates a location chip the user can clear
+- Backend `TraceWalker`: Roslyn BFS for callers (`SymbolFinder.FindCallersAsync`) and callees (`SemanticModel` walk of `InvocationExpressionSyntax`/`ObjectCreationExpressionSyntax`); per-node fan-out cap of 8 with `truncated` flag. Entry-point resolution accepts either a method name or `{filePath, line, character}`.
+- **NodeKind classification** (`TraceWalker.InferNodeKind`): each node is tagged `Normal | DbAccess | HttpCall` by walking the symbol's type hierarchy + method-name heuristics. DbContext/DbSet/IQueryable/SaveChangesAsync/FromSql/ExecuteSql → DB; HttpClient/HttpMessageHandler/IHttpClientFactory + BCL HTTP verbs (GetAsync, SendAsync, etc.) → HTTP.
 - Backend `TraceOrchestrator`: graph walk → sequential per-node LLM synopsis (with idle/overall watchdogs + cancel + partial-save) → save `TraceResult`
-- Programmatic Mermaid generation in `TraceWalker.BuildMermaid` (not LLM-emitted — more reliable); entry node highlighted
-- `TraceResultsView.tsx`: chips for elapsed/synopses/cancelled, Cancel button, Mermaid render via `MermaidDiagram` (dark theme), per-node synopsis cards (click → open file in preview pane), Save to repo flow
+- Programmatic Mermaid generation in `TraceWalker.BuildMermaid` (not LLM-emitted — more reliable). Shapes vary by NodeKind: rectangle (Normal), cylinder (DbAccess), hexagon (HttpCall). Colors classDef'd to blue/green for DB/HTTP; entry node highlighted purple.
+- `TraceResultsView.tsx`: chips for elapsed/synopses/cancelled, Cancel button, Mermaid render via `MermaidDiagram` (dark theme, with fullscreen + SVG/PNG download), per-node synopsis cards with DB/HTTP badge + file:line + click-to-open
 - `POST /api/trace/run` + `GET /api/trace/{id}` + `POST /api/trace/{id}/save`; cancel reuses `POST /api/analysis/{id}/cancel` (same Guid registry)
 - Direction-aware **Copilot Next Step** brief: bug-investigation (callers), feature overview (callees), change-impact (both)
-- Smoke-tested via UI on `ReportWriter.WriteTraceAsync` callees depth=1 — 8 nodes, ~1m25s, clean synopses, Mermaid renders inline, save writes a clean MD
+- Smoke-tested via UI on `ReportWriter.WriteTraceAsync` callees depth=1 — 8 nodes, ~1m25s, clean synopses, Mermaid renders inline, save writes a clean MD. Re-tested with Both at depth=2 — 20 nodes, ~3m, no truncation.
 
 **Save to repo flow** (shared by analysis + trace)
 - `POST /api/reports/{id}/save` and `POST /api/trace/{id}/save` write into `{repoRoot}/{Analysis:ReportOutputPath}` (default `docs/codeintel/`)
@@ -229,7 +231,6 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 
 ### ❌ Deferred (next sessions)
 
-- **"Trace from here" button in `FilePreviewPanel.tsx`** — fully designed, see [docs/plans/trace-from-here.md](docs/plans/trace-from-here.md). The trace API already accepts `{filePath, line, character}`, so this is pure-frontend: capture click offset + word, resolve via existing `getDefinition`, lift `paneMode` into `workspaceStore`, switch pane, populate `traceStore.entryPointLocation`, render a location chip in TracePanel. Plan ready to execute.
 - **Multi-language abstraction** — LSP client + tree-sitter for non-C# repos (TypeScript first). Roslyn becomes "the C# LSP backend," not a special case. Trace mode is C#-only today via Roslyn; LSP would unlock it for TS/Python/etc.
 - **Database introspection** — dump table schemas + stored proc bodies into context. Plan is to use existing app DB connection; persistent tables for session history go in our own DB.
 - **Whole-repo dead-code detection** — tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch).
@@ -237,7 +238,7 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 - **Skills system** — folder of `SKILL.md` files (csharp-bug-hunting, stored-proc-analysis, etc.) routed into prompts by mode + keyword.
 - **Roslyn-extracted initial context** — currently raw file text for the first iteration. Upgrade to method-level extraction when context budget gets tight.
 - **Optional finding-validation pass** — config flag to run a second LLM pass that critiques iter-1 findings and drops the ones it can't defend. Doubles run time but kills residual FPs.
-- **Trace v1.5 polish** — cycle detection in `TraceWalker` (currently relies on per-node fan-out cap), branch limits per direction, batched synopsis (single LLM call for several small nodes), DB/external-call detection in Mermaid (special node shapes for `DbSet` access, `HttpClient`).
+- **Trace v1.5 polish** — cycle detection in `TraceWalker` (currently relies on per-node fan-out cap + visited-set dedup), branch limits per direction, batched synopsis (single LLM call for several small nodes). (DB/HTTP node classification has shipped — see above.)
 - **OpenShift deployment** — Dockerfile, persistent volume for model, ConfigMap for `appsettings`. The single-project layout was designed for this; never done.
 - **Auth** — Windows Auth via IIS passthrough on the internal network.
 - **Persistence** — DB tables for analysis history, saved reports, prompt template versions.
@@ -248,14 +249,13 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 
 In recommended order:
 
-1. **Verify trace-mode in the UI on a richer C# project.** Local smoke-test passed (CodeIntel.sln, `ReportWriter.WriteTraceAsync` callees depth=1, 8 nodes, ~1m25s, clean). Want to confirm the experience on something bigger — `OrderController.Submit`-style entry points with Both direction at depth 2–3. Watch for performance and graph readability.
-2. **"Trace from here" in `FilePreviewPanel`.** Plan committed at [docs/plans/trace-from-here.md](docs/plans/trace-from-here.md) — frontend-only, 5 files, ~1 session of work. Closes the v1 "type the name" friction so the user can click a symbol in any open file and jump straight into a pre-populated trace.
-3. **LSP + tree-sitter abstraction.** Replace direct Roslyn calls in `ContextRequestHandler` + `TraceWalker` with an LSP client interface; add tree-sitter for fast structural scans. Ships TypeScript support (and the trace-mode TS support) for ~free once done.
-4. **SQL Server schema introspection.** Two flavors: live `INFORMATION_SCHEMA` query for the dev DB + parsing of source migrations. Cross-reference schema chunks into context when a finding involves SQL.
-5. **Skills system.** Specialized prompts (`bug-async.md`, `bug-sql-injection.md`, etc.) that get routed in based on file content. Bigger quality boost on a 7B than any general prompt.
-6. **Dockerfile + OpenShift** — multi-stage build (npm → dotnet publish), volume mount for `/models`, ConfigMap for runtime tuning.
-
-**Uncommitted at session end:** Trace v1 (backend + frontend) is on disk but not yet committed. See `git status` for the full list — start there.
+1. **Verify trace-mode in the UI on a richer C# project.** Local smoke-tests passed on `CodeIntel.sln` (Callees depth=1 → 8 nodes ~1m25s; Both depth=2 → 20 nodes ~3m). Want to confirm the experience on something bigger — controller/service entry points in a real LOB app. Watch for performance and graph readability, plus that the DB/HTTP NodeKind classification fires correctly on EF/HttpClient code.
+2. **LSP + tree-sitter abstraction.** Replace direct Roslyn calls in `ContextRequestHandler` + `TraceWalker` with an LSP client interface; add tree-sitter for fast structural scans. Ships TypeScript support (and the trace-mode TS support) for ~free once done. The single biggest compounding lever — analysis, trace, dead-code, business-docs all benefit.
+3. **SQL Server schema introspection.** Two flavors: live `INFORMATION_SCHEMA` query for the dev DB + parsing of source migrations. Cross-reference schema chunks into context when a finding (or trace node) involves SQL. Pairs nicely with the DbAccess NodeKind that already classifies which nodes hit the DB.
+4. **Whole-repo dead-code detection.** Tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch). Cheap once LSP is in place.
+5. **Business documentation mode.** Walk top-level entry points → trace → catalog. Builds directly on the trace pipeline.
+6. **Skills system.** Specialized prompts (`bug-async.md`, `bug-sql-injection.md`, etc.) that get routed in based on file content. Biggest single quality boost on a 7B local model.
+7. **Dockerfile + OpenShift** — multi-stage build (npm → dotnet publish), volume mount for `/models`, ConfigMap for runtime tuning.
 
 ---
 
