@@ -23,6 +23,7 @@ export interface PresetInfo {
   name: string;
   description: string;
   icon: string;
+  applicableLanguages?: Language[];
 }
 
 export interface FileNode {

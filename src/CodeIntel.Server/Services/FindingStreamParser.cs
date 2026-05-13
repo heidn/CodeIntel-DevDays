@@ -162,6 +162,8 @@ public class FindingStreamParser
         "callers_of" or "callers-of" => ContextRequestType.CallersOf,
         "callees_of" or "callees-of" => ContextRequestType.CalleesOf,
         "search_code" or "search-code" => ContextRequestType.SearchCode,
+        "oracle_object" or "oracle-object" or "object" or "table" or "view" or "procedure" or "package" or "function"
+            => ContextRequestType.OracleObject,
         _ => ContextRequestType.File,
     };
 }

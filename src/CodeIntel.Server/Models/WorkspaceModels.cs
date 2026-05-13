@@ -39,7 +39,8 @@ public record FileContext(
     string FilePath,
     string RelativePath,
     string Content,
-    bool IsExtractedSummary
+    bool IsExtractedSummary,
+    bool IsResolvedDependency = false
 );
 
 public record DefinitionLocation(

@@ -4,7 +4,7 @@ using CodeIntel.Server.Models;
 
 namespace CodeIntel.Server.Services;
 
-public record PresetInfo(string Key, string Name, string Description, string Icon);
+public record PresetInfo(string Key, string Name, string Description, string Icon, IReadOnlyList<string> ApplicableLanguages);
 
 public record ConversationTurn(string Role, string Content);
 
@@ -24,16 +24,28 @@ public class PromptTemplateService : IPromptTemplateService
 {
     private readonly Dictionary<string, string> _templates = new();
 
+    private static readonly IReadOnlyList<string> NonSqlLanguages = new[] { "cSharp", "typeScript", "java" };
+    private static readonly IReadOnlyList<string> SqlOnly        = new[] { "sql" };
+    private static readonly IReadOnlyList<string> AllLanguages   = new[] { "cSharp", "typeScript", "java", "sql" };
+
     private readonly List<PresetInfo> _presets = new()
     {
         new("find-dead-code", "Find Dead Code",
-            "Identify methods, classes, or variables that appear unused.", "skull"),
+            "Identify methods, classes, or variables that appear unused.", "skull", NonSqlLanguages),
         new("find-bugs", "Find Bugs",
-            "Look for null risks, missing error handling, race conditions, and edge cases.", "bug"),
+            "Look for null risks, missing error handling, race conditions, and edge cases.", "bug", NonSqlLanguages),
         new("find-business-rules", "Find Business Rules",
-            "Extract validation, calculation, and workflow rules from the code.", "scale"),
+            "Extract validation, calculation, and workflow rules from the code.", "scale", NonSqlLanguages),
         new("summarize", "Summarize",
-            "Produce a plain-English summary of what the code does.", "book"),
+            "Produce a plain-English summary of what the code does.", "book", AllLanguages),
+        new("find-bugs-sql", "Find PL/SQL Bugs",
+            "Cursor leaks, swallowed exceptions, unsafe UPDATE/DELETE, NULL comparisons, implicit conversions.", "bug", SqlOnly),
+        new("find-business-rules-sql", "Extract PL/SQL Rules",
+            "Pull rules from DDL constraints (CHECK, NOT NULL, FK), proc logic, and triggers.", "scale", SqlOnly),
+        new("cleanup-stored-proc", "Stored Proc Cleanup",
+            "Dead code, magic literals, extractable subqueries, inconsistent error handling.", "broom", SqlOnly),
+        new("efficiency-review", "Efficiency Review",
+            "Row-by-row patterns, implicit conversions, function-on-indexed-column, missing binds.", "speed", SqlOnly),
     };
 
     public PromptTemplateService()
@@ -196,6 +208,25 @@ public class PromptTemplateService : IPromptTemplateService
             Language.Sql => "senior database developer and SQL / PL/SQL expert",
             _ => "senior C# / .NET code reviewer",
         };
+
+        var contextRequestVerbs = language == Language.Sql
+            ? """
+            <request_context type="oracle_object">TABLE_OR_PROC_NAME</request_context>
+            <request_context type="file">path/to/file.sql</request_context>
+            <request_context type="search_code">search term or pattern</request_context>
+            """
+            : """
+            <request_context type="file">path/to/File.cs</request_context>
+            <request_context type="class">ClassName</request_context>
+            <request_context type="method">MethodName</request_context>
+            <request_context type="search_code">search term or pattern</request_context>
+            <request_context type="callers_of">MethodName</request_context>
+            """;
+
+        var oracleObjectGuidance = language == Language.Sql
+            ? "\n        - Prefer `oracle_object` for tables, views, procedures, packages, and functions. The tool resolves the name to the right file in the repo automatically.\n"
+            : "";
+
         return $$"""
         You are a {{persona}} performing an in-depth investigation of a codebase using a developer tool.
 
@@ -203,16 +234,12 @@ public class PromptTemplateService : IPromptTemplateService
         <finding>{"severity":"bug|warning|suggestion|info|deadcode","title":"...","description":"...","filePath":"...","lineNumber":42,"codeSnippet":"..."}</finding>
 
         If you need to see additional code to complete your analysis, emit a context request:
-        <request_context type="file">path/to/File.cs</request_context>
-        <request_context type="class">ClassName</request_context>
-        <request_context type="method">MethodName</request_context>
-        <request_context type="search_code">search term or pattern</request_context>
-        <request_context type="callers_of">MethodName</request_context>
+        {{contextRequestVerbs}}
 
         Rules:
         - Emit findings as you discover them; don't wait until the end.
         - Request context only when you cannot confidently answer from the code you already have.
-        - You may request up to 3 items per turn. The tool will provide the code and continue.
+        - You may request up to 3 items per turn. The tool will provide the code and continue.{{oracleObjectGuidance}}
         - When you are done and have no more requests, write <done /> on its own line.
         - Be specific. "Maybe a problem" is not a finding. Either you see it or you don't.
         """;
@@ -234,7 +261,10 @@ public class PromptTemplateService : IPromptTemplateService
     {
         var sb = new StringBuilder();
         sb.AppendLine("--- BEGIN CODE CONTEXT ---");
-        foreach (var file in context.Files)
+        var primaryFiles = context.Files.Where(f => !f.IsResolvedDependency).ToList();
+        var depFiles     = context.Files.Where(f =>  f.IsResolvedDependency).ToList();
+
+        foreach (var file in primaryFiles)
         {
             sb.AppendLine();
             sb.AppendLine($"// FILE: {file.RelativePath}");
@@ -242,6 +272,23 @@ public class PromptTemplateService : IPromptTemplateService
             sb.AppendLine(file.Content);
             sb.AppendLine("```");
         }
+
+        if (depFiles.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("--- PL/SQL OBJECT DEFINITIONS ---");
+            sb.AppendLine("// Definitions of tables, views, packages, and routines referenced by the primary file(s).");
+            sb.AppendLine("// Use these as supporting reference material when analyzing the primary file(s).");
+            foreach (var file in depFiles)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"// FILE: {file.RelativePath}");
+                sb.AppendLine($"```{FileLang(file.RelativePath)}");
+                sb.AppendLine(file.Content);
+                sb.AppendLine("```");
+            }
+        }
+
         sb.AppendLine();
         sb.AppendLine("--- END CODE CONTEXT ---");
         return sb.ToString();

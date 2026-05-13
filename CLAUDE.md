@@ -1,10 +1,10 @@
 # CodeIntel — Project Memory
 
-> Internal dev tool: web app that lets developers analyze C# code and (eventually) SQL Server objects using a local LLM, with handoff to **GitHub Copilot** (team's subscription) via MD reports written into the loaded repo.
+> Internal dev tool: web app that lets developers analyze C# code and Oracle PL/SQL stored procs using a local LLM, with handoff to **GitHub Copilot** (team's subscription) via MD reports written into the loaded repo.
 
 ## Status
 
-**Phase 1 + Phase 2 + Trace mode v1 verified end-to-end.** Save-to-repo, cancellation + watchdogs, and call-trail trace are all shipping.
+**Phase 1 + Phase 2 + Trace mode v1 + PL/SQL repo mode v1 shipping.** Save-to-repo, cancellation + watchdogs, call-trail trace, and PL/SQL stored-proc analysis are all wired up; trace v1 verified end-to-end on `CodeIntel.sln`, PL/SQL v1 needs UI smoke-test on a real repo.
 
 The agentic analysis loop runs cleanly through to `<done/>` and produces structured findings on a real .sln. On-demand "Save to repo" writes the markdown report plus a preset-aware "Copilot Next Step" prompt into `{repoRoot}/docs/codeintel/` (configurable), with INDEX.md + `.codeintel-index.json` sidecar + one-time folder README. Cancellation is wired through a per-analysis CTS registry with idle-token (90s) and overall (600s) watchdogs; partial findings survive cancel.
 
@@ -48,6 +48,8 @@ CodeIntel/
 ├── CLAUDE.md                            ← you are here
 ├── models/                              ← gitignored GGUF files
 │   └── qwen2.5-coder-7b-instruct-q4_k_m.gguf
+├── test-data/sql/                       ← small PL/SQL fixture for manual smoke-testing
+├── tests/CodeIntel.Server.Tests/        ← xunit 2.9 test project — parser/resolver/builder unit + integration tests
 └── src/CodeIntel.Server/
     ├── CodeIntel.Server.csproj
     ├── Program.cs                       ← DI, SignalR, SPA hosting, eager LLM init
@@ -68,7 +70,9 @@ CodeIntel/
     │   ├── AnalysisOrchestrator.cs      ← one-shot pipeline (not active in DI)
     │   ├── InvestigationOrchestrator.cs ← agentic loop + CT/watchdogs (ACTIVE)
     │   ├── AnalysisCancellationRegistry.cs ← per-analysis CTS lookup; reused by trace too
-    │   ├── ContextRequestHandler.cs     ← fulfills LLM context requests via Roslyn
+    │   ├── ContextRequestHandler.cs     ← fulfills LLM context requests via Roslyn (or PL/SQL resolver for OracleObject)
+    │   ├── PlSqlObjectParser.cs         ← regex-based extractor of table/proc/package refs from PL/SQL text (comment + string aware)
+    │   ├── PlSqlRepoResolver.cs         ← maps a PL/SQL object name → file in workspace (filename match + CREATE-OR-REPLACE DDL grep)
     │   ├── TraceWalker.cs               ← Roslyn BFS for callers (FindCallersAsync) + callees (SemanticModel + SyntaxWalker), programmatic Mermaid
     │   ├── TraceOrchestrator.cs         ← graph walk → per-node LLM synopsis → save; partial-save on cancel
     │   ├── TraceResultStore.cs          ← in-memory cache for TraceResults (separate from analysis store)
@@ -76,15 +80,20 @@ CodeIntel/
     │   ├── ReportWriter.cs              ← writes MD into target repo + unified INDEX (Kind: "analysis"|"trace") + JSON sidecar
     │   └── AnalysisResultStore.cs       ← in-memory cache for AnalysisResults
     ├── Models/
-    │   ├── AnalysisModels.cs            ← Request, Result, Finding, enums
+    │   ├── AnalysisModels.cs            ← Request, Result, Finding, enums (incl. ContextRequestType.OracleObject)
     │   ├── AnalysisEvents.cs            ← SignalR event factory
-    │   ├── WorkspaceModels.cs           ← Workspace, ProjectNode, FileNode, CodeContext
+    │   ├── WorkspaceModels.cs           ← Workspace, ProjectNode, FileNode, CodeContext (FileContext.IsResolvedDependency flag)
+    │   ├── PlSqlModels.cs               ← ParsedObjectReferences, PlSqlResolution, PlSqlObjectKind
     │   └── Options.cs                   ← LlmOptions, AnalysisOptions
     ├── Prompts/                         ← embedded MD resources
     │   ├── find-dead-code.md
     │   ├── find-bugs.md
     │   ├── find-business-rules.md
-    │   └── summarize.md
+    │   ├── summarize.md
+    │   ├── find-bugs-sql.md             ← PL/SQL bug hunting (cursor leaks, swallowed exceptions, etc.)
+    │   ├── find-business-rules-sql.md   ← rules from DDL constraints + proc logic + triggers
+    │   ├── cleanup-stored-proc.md       ← refactor briefing (dead code, magic literals, inconsistent error handling)
+    │   └── efficiency-review.md         ← performance signals (row-by-row, implicit conversions, missing binds)
     └── ClientApp/                       ← React 19 + Vite + MUI v9
         ├── package.json
         ├── vite.config.ts               ← proxies /api + /hubs (ws:true) to :5000
@@ -189,13 +198,21 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 **Analysis pipeline**
 - Solution loading via Roslyn workspace (`MSBuildWorkspace`); TS/Java/SQL via file scan
 - File tree UI with project + file selection; folder picker dialog; file preview tabs
-- 4 preset prompts: find dead code / bugs / business rules / summarize
+- 8 preset prompts: 4 C#-tuned (`find-dead-code`, `find-bugs`, `find-business-rules`, `summarize`) + 4 PL/SQL-tuned (`find-bugs-sql`, `find-business-rules-sql`, `cleanup-stored-proc`, `efficiency-review`). Each `PresetInfo` carries `ApplicableLanguages`; the `PromptSelector` filters by `workspace.language` so users only see relevant presets.
 - Free-text mode + pinned snippet support
 - SignalR token streaming with live UI updates (started, token, finding, status, iteration, contextRequested/Fulfilled, completed, cancelled, error, traceGraphReady, traceNodeSynopsis)
 - Structured finding extraction during stream (`<finding>` blocks) with malformed/incomplete drop counters
-- **Agentic investigation loop** — `InvestigationOrchestrator` (default 3 iterations); LLM emits `<request_context>` to pull additional file/class/method/callers/callees/search via Roslyn
+- **Agentic investigation loop** — `InvestigationOrchestrator` (default 3 iterations); LLM emits `<request_context>` to pull additional file/class/method/callers/callees/search via Roslyn, or **`oracle_object`** for PL/SQL workspaces (resolved via `IPlSqlRepoResolver`)
 - Inline code annotations (`CodeAnnotationView`)
 - Tightened `find-bugs.md` prompt with anti-hedging + safe-API allowlists (suppresses most of the common Qwen 7B FP classes)
+
+**PL/SQL repo mode (v1, repo-only — no live Oracle yet)**
+- Load any folder of `.sql/.pkg/.pkb` files as a `Language.Sql` workspace (existing file-scan path; no new loader needed)
+- `PlSqlObjectParser` strips PL/SQL comments + string literals, then regex-extracts referenced objects from DML keywords (`FROM`/`JOIN`/`INTO`/`UPDATE`/`DELETE`/`MERGE`/`USING`), explicit `EXECUTE`/`CALL`, and `package.proc(...)` invocation syntax
+- `PlSqlRepoResolver` maps an object name → file in the same workspace: filename match (case-insensitive, schema-prefix stripped) first, then a CREATE-OR-REPLACE DDL grep across all SQL files as fallback
+- `ContextBuilder` auto-attaches resolved object definitions as `FileContext { IsResolvedDependency: true }` when any seed file is PL/SQL, respecting the same `MaxContextTokens` budget. `BuildContextBlock` renders them under a separate `--- PL/SQL OBJECT DEFINITIONS ---` header so the model treats them as supporting material.
+- 4 PL/SQL-tuned presets (`find-bugs-sql.md`, `find-business-rules-sql.md`, `cleanup-stored-proc.md`, `efficiency-review.md`) follow the existing anti-hedging Qwen structure, with 4 matching preset-aware **Copilot Next Step** branches in `ReportGenerator` (Jira-ready bugs / Confluence-ready rules / sequenced refactor plan / EXPLAIN-PLAN-validated efficiency review)
+- During the agentic loop, the LLM can emit `<request_context type="oracle_object">NAME</request_context>` to pull a specific table / view / proc / package on demand
 
 **Call-trail trace mode (v1)**
 - Top-level **Analysis | Trace** toggle in `AnalysisPanel.tsx` (pane mode now lives in `workspaceStore`)
@@ -232,7 +249,7 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 ### ❌ Deferred (next sessions)
 
 - **Multi-language abstraction** — LSP client + tree-sitter for non-C# repos (TypeScript first). Roslyn becomes "the C# LSP backend," not a special case. Trace mode is C#-only today via Roslyn; LSP would unlock it for TS/Python/etc.
-- **Database introspection** — dump table schemas + stored proc bodies into context. Plan is to use existing app DB connection; persistent tables for session history go in our own DB.
+- **Live Oracle introspection (PL/SQL v2)** — `Oracle.ManagedDataAccess.Core` + connection string + queries against `ALL_TABLES` / `ALL_TAB_COLUMNS` / `USER_SOURCE` / `ALL_PROCEDURES` to fetch schemas and stored-proc bodies from a live DB when the repo doesn't have the DDL committed. Also unlocks cross-workspace augmentation (a C# workspace's `DbAccess` trace nodes pulling schema from a sibling Oracle connection). v1 (repo-only) is shipping.
 - **Whole-repo dead-code detection** — tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch).
 - **Business documentation mode** — walk top-level entry points (controllers, handlers), trace flows, produce a feature catalog. Builds on the existing trace-mode pipeline.
 - **Skills system** — folder of `SKILL.md` files (csharp-bug-hunting, stored-proc-analysis, etc.) routed into prompts by mode + keyword.
@@ -251,7 +268,7 @@ In recommended order:
 
 1. **Verify trace-mode in the UI on a richer C# project.** Local smoke-tests passed on `CodeIntel.sln` (Callees depth=1 → 8 nodes ~1m25s; Both depth=2 → 20 nodes ~3m). Want to confirm the experience on something bigger — controller/service entry points in a real LOB app. Watch for performance and graph readability, plus that the DB/HTTP NodeKind classification fires correctly on EF/HttpClient code.
 2. **LSP + tree-sitter abstraction.** Replace direct Roslyn calls in `ContextRequestHandler` + `TraceWalker` with an LSP client interface; add tree-sitter for fast structural scans. Ships TypeScript support (and the trace-mode TS support) for ~free once done. The single biggest compounding lever — analysis, trace, dead-code, business-docs all benefit.
-3. **SQL Server schema introspection.** Two flavors: live `INFORMATION_SCHEMA` query for the dev DB + parsing of source migrations. Cross-reference schema chunks into context when a finding (or trace node) involves SQL. Pairs nicely with the DbAccess NodeKind that already classifies which nodes hit the DB.
+3. **PL/SQL repo-mode UI smoke-test + Oracle live (v2).** v1 (repo-only) is shipping — load a real PL/SQL repo, pick a stored proc, run each of the 4 SQL presets, verify the parser/resolver attaches the right object definitions and the Copilot Next Step briefs read cleanly. Then v2: add `Oracle.ManagedDataAccess.Core`, wire a `SqlOptions` (connection string) + `IOracleSchemaService` that fulfils the `OracleObject` context-request with live `ALL_TABLES` / `USER_SOURCE` data when the repo doesn't have the DDL committed. Pairs with the trace-mode DbAccess NodeKind (cross-workspace augmentation) once the LSP rewrite lands.
 4. **Whole-repo dead-code detection.** Tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch). Cheap once LSP is in place.
 5. **Business documentation mode.** Walk top-level entry points → trace → catalog. Builds directly on the trace pipeline.
 6. **Skills system.** Specialized prompts (`bug-async.md`, `bug-sql-injection.md`, etc.) that get routed in based on file content. Biggest single quality boost on a 7B local model.
@@ -264,6 +281,9 @@ In recommended order:
 ```powershell
 # Dev run
 dotnet run --project src\CodeIntel.Server
+
+# Tests (xunit, PL/SQL parser/resolver/builder)
+dotnet test tests\CodeIntel.Server.Tests
 
 # Build production bundle
 dotnet publish src\CodeIntel.Server -c Release -o publish

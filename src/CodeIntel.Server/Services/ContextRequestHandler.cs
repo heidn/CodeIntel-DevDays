@@ -13,14 +13,19 @@ public interface IContextRequestHandler
 public class ContextRequestHandler : IContextRequestHandler
 {
     private readonly IWorkspaceService _workspace;
+    private readonly IPlSqlRepoResolver _plSqlResolver;
     private readonly ILogger<ContextRequestHandler> _logger;
 
     private const int MaxSearchResults = 5;
     private const int MaxSnippetLines = 80;
 
-    public ContextRequestHandler(IWorkspaceService workspace, ILogger<ContextRequestHandler> logger)
+    public ContextRequestHandler(
+        IWorkspaceService workspace,
+        IPlSqlRepoResolver plSqlResolver,
+        ILogger<ContextRequestHandler> logger)
     {
         _workspace = workspace;
+        _plSqlResolver = plSqlResolver;
         _logger = logger;
     }
 
@@ -38,6 +43,7 @@ public class ContextRequestHandler : IContextRequestHandler
                 ContextRequestType.CallersOf => await FulfillCallersAsync(workspaceId, request.Target, ct),
                 ContextRequestType.CalleesOf => await FulfillCalleesAsync(workspaceId, request.Target, ct),
                 ContextRequestType.SearchCode => await FulfillSearchAsync(workspaceId, request.Target, ct),
+                ContextRequestType.OracleObject => await FulfillOracleObjectAsync(workspaceId, request.Target, ct),
                 _ => null,
             };
 
@@ -196,6 +202,20 @@ public class ContextRequestHandler : IContextRequestHandler
     {
         var pattern = new Regex(Regex.Escape(searchTerm), RegexOptions.Compiled | RegexOptions.IgnoreCase);
         return await SearchByPatternAsync(workspaceId, pattern, $"'{searchTerm}'", ct);
+    }
+
+    private async Task<string?> FulfillOracleObjectAsync(string workspaceId, string objectName, CancellationToken ct)
+    {
+        var resolution = await _plSqlResolver.ResolveAsync(workspaceId, objectName, Models.PlSqlObjectKind.Unknown, ct);
+        if (resolution == null) return null;
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"// PL/SQL OBJECT: {resolution.Name} (resolved via {resolution.ResolvedVia})");
+        sb.AppendLine($"// FILE: {resolution.RelativePath}");
+        sb.AppendLine("```sql");
+        sb.AppendLine(resolution.Content);
+        sb.AppendLine("```");
+        return sb.ToString();
     }
 
     private async Task<string?> SearchByPatternAsync(string workspaceId, Regex pattern, string label, CancellationToken ct)

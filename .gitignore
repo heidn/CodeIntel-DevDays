@@ -10,6 +10,11 @@ publish/
 node_modules/
 dist/
 
+# TypeScript incremental build cache + emitted vite.config artifacts
+*.tsbuildinfo
+src/CodeIntel.Server/ClientApp/vite.config.js
+src/CodeIntel.Server/ClientApp/vite.config.d.ts
+
 # Models (too large for git)
 models/*.gguf
 models/*.bin

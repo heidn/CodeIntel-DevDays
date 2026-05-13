@@ -49,6 +49,7 @@ public enum ContextRequestType
     CallersOf,
     CalleesOf,
     SearchCode,
+    OracleObject,
 }
 
 public record ContextRequest(ContextRequestType Type, string Target);

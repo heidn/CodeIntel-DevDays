@@ -16,7 +16,9 @@ import BugReportIcon from '@mui/icons-material/BugReportOutlined';
 import GavelIcon from '@mui/icons-material/GavelOutlined';
 import AutoStoriesIcon from '@mui/icons-material/AutoStoriesOutlined';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
-import { useState } from 'react';
+import CleaningServicesOutlinedIcon from '@mui/icons-material/CleaningServicesOutlined';
+import SpeedOutlinedIcon from '@mui/icons-material/SpeedOutlined';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { getPresets, startAnalysis } from '../api/analysis';
 import { useWorkspaceStore } from '../stores/workspaceStore';
@@ -31,6 +33,8 @@ const iconMap: Record<string, React.ReactNode> = {
   bug: <BugReportIcon sx={{ fontSize: 18 }} />,
   scale: <GavelIcon sx={{ fontSize: 18 }} />,
   book: <AutoStoriesIcon sx={{ fontSize: 18 }} />,
+  broom: <CleaningServicesOutlinedIcon sx={{ fontSize: 18 }} />,
+  speed: <SpeedOutlinedIcon sx={{ fontSize: 18 }} />,
 };
 
 function baseFileName(path: string): string {
@@ -51,7 +55,22 @@ export default function PromptSelector() {
   const startRun          = useAnalysisStore((s) => s.startRun);
   const runState          = useAnalysisStore((s) => s.runState);
 
-  const { data: presets = [] } = useQuery({ queryKey: ['presets'], queryFn: getPresets });
+  const { data: allPresets = [] } = useQuery({ queryKey: ['presets'], queryFn: getPresets });
+  const presets = workspace
+    ? allPresets.filter(
+        (p) =>
+          !p.applicableLanguages ||
+          p.applicableLanguages.length === 0 ||
+          p.applicableLanguages.includes(workspace.language),
+      )
+    : allPresets;
+
+  // If the active preset is no longer applicable to this workspace's language, clear it.
+  useEffect(() => {
+    if (!selectedPresetKey) return;
+    if (presets.some((p) => p.key === selectedPresetKey)) return;
+    setPreset(null);
+  }, [selectedPresetKey, presets, setPreset]);
 
   const runMutation = useMutation({
     mutationFn: async (req: Omit<AnalysisRequest, 'analysisId'>) => {

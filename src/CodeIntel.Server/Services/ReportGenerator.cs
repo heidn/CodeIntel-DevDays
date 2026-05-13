@@ -186,6 +186,64 @@ public class ReportGenerator : IReportGenerator
                 Keep it dense and skimmable. Reference specific files when relevant.
                 """),
 
+            "find-bugs-sql" => new(
+                "The local model surfaced potential PL/SQL bugs. Use Copilot to verify each against Oracle 19c behavior before filing.",
+                """
+                Review each finding above. For every item:
+                  1. Confirm the bug actually exists by reading the cited line in context (open the file referenced under #file:).
+                  2. Validate the failure mode against Oracle 19c semantics. Cite the doc / data dictionary view if relevant
+                     (ALL_SOURCE, ALL_CONSTRAINTS, ALL_TAB_COLUMNS, ALL_TRIGGERS).
+                  3. If real, propose a precise PL/SQL edit (show the before/after). Note any objects whose definition you'd
+                     need to inspect before merging (e.g., the actual columns of a table referenced only by alias).
+                  4. If a finding is a false positive, say so and explain (e.g., "EXCEPTION block at line N handles this").
+
+                Group output by severity. Produce a Jira-ready summary table at the end: severity / title / file:line / status (confirmed / rejected / needs-investigation).
+                """),
+
+            "find-business-rules-sql" => new(
+                "The local model extracted business rules from PL/SQL and DDL. Use Copilot to refine into a Confluence-ready spec.",
+                """
+                For each rule above:
+                  1. Restate in plain business language. Drop PL/SQL terminology.
+                  2. Identify the enforcement mechanism: CHECK constraint / FK / proc logic / trigger / package default. Cite file:line.
+                  3. Flag rules that appear contradictory, redundant, or unenforced anywhere (e.g., a CHECK constraint that
+                     a procedure bypasses with `EXCEPTION WHEN OTHERS`).
+                  4. Note rules that lack obvious test coverage.
+
+                Produce a Confluence-ready table: rule / domain area / enforcement mechanism / source (file:line) / notes.
+                End with a flat list of open questions for product / data owners.
+                """),
+
+            "cleanup-stored-proc" => new(
+                "The local model identified PL/SQL cleanup targets. Use Copilot to produce a sequenced refactor plan.",
+                """
+                Using the findings above, produce a numbered refactor plan. For each item:
+                  1. Rationale — what makes this code hard to read or maintain (cite the finding).
+                  2. Before snippet — quote the current code (file:line).
+                  3. After snippet — show the proposed PL/SQL. Preserve behavior; do not change business logic.
+                  4. Risk — what could break (lock contention, autonomous transaction interaction, trigger-fire-count change).
+                  5. Test approach — how a developer would verify behavior is preserved.
+
+                Sequence the items so independent changes go first and dependent ones last. End with a one-line recommendation
+                for which item is the highest-value, lowest-risk place to start.
+                """),
+
+            "efficiency-review" => new(
+                "The local model flagged PL/SQL performance signals. Use Copilot to confirm against real plan data before changing anything.",
+                """
+                For each suggestion above:
+                  1. Open the file referenced under #file:. Read the actual query.
+                  2. Identify the table(s) and indexes the predicate would need to use. Reject the suggestion if the assumed
+                     index doesn't exist in the DDL (or if the table is small enough that a full scan is fine).
+                  3. For confirmed items, write the exact EXPLAIN PLAN command the developer should run, including bind values
+                     that exercise the suspect path.
+                  4. Estimate impact: order-of-magnitude row counts and round-trips eliminated. Don't claim a speedup you
+                     can't justify from the code.
+
+                Produce a prioritized list: rank by (impact × confidence) / risk. For each item include the EXPLAIN PLAN
+                snippet inline. Reject and explain any finding you can't defend.
+                """),
+
             _ => new(
                 "Use the findings above as input for follow-up analysis.",
                 "Review the findings above. Verify their accuracy, prioritize them, and propose specific next actions. Reference file paths and line numbers from the findings in your response."),
