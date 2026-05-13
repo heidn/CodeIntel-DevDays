@@ -244,8 +244,16 @@ export default function PromptSelector() {
         </Paper>
       )}
 
-      <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
-        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 1,
+        }}
+      >
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, minWidth: 0 }}>
           {selectedFiles.size > 0 && (
             <Chip
               size="small"
@@ -271,7 +279,7 @@ export default function PromptSelector() {
               sx={{ bgcolor: 'rgba(79, 70, 229, 0.08)', color: 'primary.main' }}
             />
           )}
-        </Stack>
+        </Box>
         <Button
           variant="contained"
           startIcon={
@@ -283,10 +291,11 @@ export default function PromptSelector() {
           }
           onClick={handleRun}
           disabled={!canRun}
+          sx={{ flexShrink: 0, ml: 'auto' }}
         >
           Run Analysis
         </Button>
-      </Stack>
+      </Box>
 
       {runMutation.isError && (
         <Alert severity="error" sx={{ mt: 2, fontSize: '0.75rem' }}>

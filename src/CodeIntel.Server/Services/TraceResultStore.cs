@@ -37,11 +37,12 @@ public class SqliteTraceResultStore : ITraceResultStore
 
     public void Save(TraceResult result)
     {
-        _ = Task.Run(async () =>
-        {
-            try { await SaveAsyncCore(result); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Failed to persist trace {Id}", result.Id); }
-        });
+        // Blocking write. The orchestrator emits the SignalR `completed` event immediately
+        // after Save() returns, and the client fetches by id over HTTP right after that —
+        // so the row MUST be queryable before we return. A few-KB SQLite WAL write is
+        // microseconds; the orchestrator is already on a background Task, so blocking here
+        // is harmless. Exceptions propagate to the caller's catch block (emits `error`).
+        SaveAsyncCore(result).GetAwaiter().GetResult();
     }
 
     private async Task SaveAsyncCore(TraceResult r)

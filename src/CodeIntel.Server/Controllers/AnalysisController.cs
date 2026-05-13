@@ -81,8 +81,8 @@ public class AnalysisController : ControllerBase
     }
 
     [HttpGet("recent")]
-    public IActionResult GetRecent([FromQuery] int count = 20) =>
-        Ok(_store.Recent(count));
+    public IActionResult GetRecent([FromQuery] int count = 20, [FromQuery] string? workspaceId = null) =>
+        Ok(_store.Recent(count, workspaceId));
 
     [HttpPost("{id}/cancel")]
     public IActionResult Cancel(Guid id)

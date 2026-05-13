@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { AnalysisRequest, LlmStatus, PresetInfo } from '../types';
+import type { AnalysisRequest, AnalysisResult, LlmStatus, PresetInfo } from '../types';
 
 export async function getPresets(): Promise<PresetInfo[]> {
   const { data } = await apiClient.get<PresetInfo[]>('/analysis/presets');
@@ -53,6 +53,16 @@ export async function estimateRun(
   const { data } = await apiClient.post<EstimateResult>('/analysis/estimate', {
     workspaceId,
     selectedFilePaths,
+  });
+  return data;
+}
+
+export async function getRecentAnalyses(
+  workspaceId?: string,
+  count: number = 20,
+): Promise<AnalysisResult[]> {
+  const { data } = await apiClient.get<AnalysisResult[]>('/analysis/recent', {
+    params: { count, workspaceId },
   });
   return data;
 }

@@ -18,6 +18,24 @@ export interface Finding {
   codeSnippet: string | null;
 }
 
+export interface AnalysisResult {
+  id: string;
+  startedAt: string;
+  completedAt: string;
+  mode: AnalysisMode;
+  presetKey: string | null;
+  freeTextPrompt: string | null;
+  analyzedFiles: string[];
+  findings: Finding[];
+  rawLlmOutput: string;
+  contextTokens: number;
+  duration: string;
+  workspaceId: string;
+  reportPath: string | null;
+  workspaceRoot: string | null;
+  contentHash: string | null;
+}
+
 export interface PresetInfo {
   key: string;
   name: string;

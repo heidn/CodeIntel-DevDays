@@ -10,7 +10,7 @@ public interface IAnalysisResultStore
 {
     void Save(AnalysisResult result);
     AnalysisResult? Get(Guid id);
-    IReadOnlyList<AnalysisResult> Recent(int count = 20);
+    IReadOnlyList<AnalysisResult> Recent(int count = 20, string? workspaceId = null);
 }
 
 /// <summary>
@@ -42,13 +42,11 @@ public class SqliteAnalysisResultStore : IAnalysisResultStore
 
     public void Save(AnalysisResult result)
     {
-        // Sync wrapper: persistence shouldn't block the orchestrator's reply, but a
-        // failure is worth logging. Fire-and-forget on the thread pool.
-        _ = Task.Run(async () =>
-        {
-            try { await SaveAsyncCore(result); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Failed to persist analysis {Id}", result.Id); }
-        });
+        // Blocking write. Callers (orchestrator + save-to-repo flow) emit follow-up
+        // events / accept fetch-by-id calls immediately after Save() returns, so the
+        // row MUST be queryable before we return. SQLite WAL writes of a few KB are
+        // microseconds and Save() is called from a background Task, so blocking is fine.
+        SaveAsyncCore(result).GetAwaiter().GetResult();
     }
 
     private async Task SaveAsyncCore(AnalysisResult r)
@@ -124,16 +122,24 @@ public class SqliteAnalysisResultStore : IAnalysisResultStore
         return Hydrate(reader);
     }
 
-    public IReadOnlyList<AnalysisResult> Recent(int count = 20)
+    public IReadOnlyList<AnalysisResult> Recent(int count = 20, string? workspaceId = null)
     {
-        return RecentAsyncCore(count).GetAwaiter().GetResult();
+        return RecentAsyncCore(count, workspaceId).GetAwaiter().GetResult();
     }
 
-    private async Task<IReadOnlyList<AnalysisResult>> RecentAsyncCore(int count)
+    private async Task<IReadOnlyList<AnalysisResult>> RecentAsyncCore(int count, string? workspaceId)
     {
         await using var conn = await _db.OpenAsync();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM analyses ORDER BY started_at DESC LIMIT $n";
+        if (string.IsNullOrWhiteSpace(workspaceId))
+        {
+            cmd.CommandText = "SELECT * FROM analyses ORDER BY started_at DESC LIMIT $n";
+        }
+        else
+        {
+            cmd.CommandText = "SELECT * FROM analyses WHERE workspace_id = $ws ORDER BY started_at DESC LIMIT $n";
+            Bind(cmd, "$ws", workspaceId);
+        }
         Bind(cmd, "$n", count);
         await using var reader = await cmd.ExecuteReaderAsync();
         var list = new List<AnalysisResult>(count);

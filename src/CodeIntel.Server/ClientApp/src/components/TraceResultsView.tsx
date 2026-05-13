@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Typography,
@@ -22,14 +22,34 @@ import StorageIcon from '@mui/icons-material/StorageOutlined';
 import CloudIcon from '@mui/icons-material/CloudOutlined';
 import LaunchIcon from '@mui/icons-material/LaunchOutlined';
 import WarningAmberIcon from '@mui/icons-material/WarningAmberOutlined';
+import CloseIcon from '@mui/icons-material/Close';
+import BugReportIcon from '@mui/icons-material/BugReportOutlined';
 import { openInVsCode } from '../utils/openInVsCode';
-import type { NodeKind } from '../types';
+import type { AnalysisResult, Finding, NodeKind, Severity } from '../types';
+import { getRecentAnalyses } from '../api/analysis';
+import { decorateMermaidWithFindings, matchFindingsToNodes, SEVERITY_RANK } from '../utils/findingsOverlay';
 
 const NODE_KIND_STYLE: Record<NodeKind, { label: string; bg: string; color: string; icon: typeof StorageIcon } | null> = {
   normal: null,
   dbAccess: { label: 'DB',   bg: 'rgba(59,130,246,0.10)', color: '#93c5fd', icon: StorageIcon },
   httpCall: { label: 'HTTP', bg: 'rgba(34,197,94,0.10)',  color: '#86efac', icon: CloudIcon   },
 };
+
+const SEVERITY_STYLE: Record<Severity, { label: string; bg: string; color: string }> = {
+  bug:        { label: 'BUG',     bg: 'rgba(239,68,68,0.12)',  color: '#fca5a5' },
+  warning:    { label: 'WARN',    bg: 'rgba(245,158,11,0.12)', color: '#fcd34d' },
+  deadCode:   { label: 'DEAD',    bg: 'rgba(168,85,247,0.12)', color: '#d8b4fe' },
+  suggestion: { label: 'HINT',    bg: 'rgba(56,189,248,0.10)', color: '#7dd3fc' },
+  info:       { label: 'INFO',    bg: 'rgba(148,163,184,0.10)', color: '#cbd5e1' },
+};
+
+function formatAnalysisLabel(a: AnalysisResult): string {
+  const when = new Date(a.startedAt);
+  const date = `${when.getMonth() + 1}/${when.getDate()}`;
+  const time = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const what = a.presetKey ?? (a.freeTextPrompt ? 'free-text' : 'analysis');
+  return `${date} ${time} · ${what}`;
+}
 import { useTraceStore } from '../stores/traceStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { getTrace, saveTraceReport } from '../api/trace';
@@ -73,6 +93,10 @@ export default function TraceResultsView() {
   const [saveError, setSaveError]         = useState<string | null>(null);
   const [toast, setToast]                 = useState<string | null>(null);
 
+  // Findings overlay: most-recent analysis for this workspace, mapped onto trace nodes.
+  const [overlayAnalysis, setOverlayAnalysis] = useState<AnalysisResult | null>(null);
+  const [overlayDismissed, setOverlayDismissed] = useState(false);
+
   // Reset save state on a new run.
   useEffect(() => {
     if (runState === 'starting') {
@@ -80,8 +104,49 @@ export default function TraceResultsView() {
       setSavePath('');
       setSavedInfo(null);
       setSaveError(null);
+      setOverlayAnalysis(null);
+      setOverlayDismissed(false);
     }
   }, [runState]);
+
+  // When the trace completes, fetch the most-recent analysis for this workspace
+  // and auto-apply it as a finding overlay. The user can dismiss it.
+  useEffect(() => {
+    if (runState !== 'completed' && runState !== 'cancelled') return;
+    if (!workspace || nodes.length === 0 || overlayDismissed) return;
+    if (overlayAnalysis) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await getRecentAnalyses(workspace.id, 1);
+        if (cancelled) return;
+        if (list.length > 0 && list[0].findings.length > 0) {
+          setOverlayAnalysis(list[0]);
+        }
+      } catch {
+        // Non-fatal — overlay is opt-in enhancement.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [runState, workspace, nodes.length, overlayAnalysis, overlayDismissed]);
+
+  // Match findings to nodes (recomputes when overlay or nodes change).
+  const findingsByNode = useMemo<Map<string, Finding[]>>(
+    () => (overlayAnalysis ? matchFindingsToNodes(nodes, overlayAnalysis.findings) : new Map()),
+    [overlayAnalysis, nodes],
+  );
+
+  const matchedFindingCount = useMemo(() => {
+    let n = 0;
+    for (const list of findingsByNode.values()) n += list.length;
+    return n;
+  }, [findingsByNode]);
+
+  // Decorate the Mermaid source with finding rings when the overlay is active.
+  const decoratedMermaid = useMemo(
+    () => (mermaid && findingsByNode.size > 0 ? decorateMermaidWithFindings(mermaid, findingsByNode) : mermaid),
+    [mermaid, findingsByNode],
+  );
 
   // When the trace completes, pull the full result (graph + mermaid + edges) from the API.
   // The trace SignalR stream only carries traceGraphReady + per-node synopses incrementally.
@@ -210,6 +275,22 @@ export default function TraceResultsView() {
               }}
             />
           )}
+          {overlayAnalysis && (
+            <Chip
+              size="small"
+              icon={<BugReportIcon sx={{ fontSize: 14 }} />}
+              label={`overlay: ${formatAnalysisLabel(overlayAnalysis)} · ${matchedFindingCount}/${overlayAnalysis.findings.length} on this trace`}
+              onDelete={() => { setOverlayAnalysis(null); setOverlayDismissed(true); }}
+              deleteIcon={<CloseIcon sx={{ fontSize: 14 }} />}
+              sx={{
+                bgcolor: 'rgba(239,68,68,0.08)',
+                color: '#fca5a5',
+                fontFamily: '"JetBrains Mono", monospace',
+                '& .MuiChip-icon': { color: '#fca5a5' },
+                '& .MuiChip-deleteIcon': { color: '#fca5a5', '&:hover': { color: '#fecaca' } },
+              }}
+            />
+          )}
         </Stack>
 
         <Stack direction="row" spacing={1}>
@@ -329,9 +410,9 @@ export default function TraceResultsView() {
           </Box>
         )}
 
-        {mermaid && (
+        {decoratedMermaid && (
           <MermaidDiagram
-            source={mermaid}
+            source={decoratedMermaid}
             filenameStem={buildDiagramFilenameStem(entryPointFqn, currentTraceId)}
           />
         )}
@@ -342,14 +423,16 @@ export default function TraceResultsView() {
               Node synopses
             </Typography>
             <Stack spacing={1}>
-              {nodes.map((node) => (
+              {nodes.map((node) => {
+                const nodeFindings = findingsByNode.get(node.id) ?? [];
+                return (
                 <Paper
                   key={node.id}
                   variant="outlined"
                   sx={{ p: 1.5, cursor: node.filePath ? 'pointer' : 'default' }}
                   onClick={() => node.filePath && setPreviewedFile(node.filePath)}
                 >
-                  <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 0.5 }}>
+                  <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 0.5, flexWrap: 'wrap' }}>
                     <Typography variant="body2" sx={{ fontWeight: 600, fontFamily: '"JetBrains Mono", monospace' }}>
                       {node.displayName}
                     </Typography>
@@ -369,6 +452,26 @@ export default function TraceResultsView() {
                             bgcolor: ks.bg,
                             color: ks.color,
                             '& .MuiChip-icon': { color: ks.color, ml: 0.5 },
+                          }}
+                        />
+                      );
+                    })()}
+                    {nodeFindings.length > 0 && (() => {
+                      const top = nodeFindings.reduce((a, b) =>
+                        SEVERITY_RANK[b.severity] > SEVERITY_RANK[a.severity] ? b : a);
+                      const ss = SEVERITY_STYLE[top.severity];
+                      return (
+                        <Chip
+                          size="small"
+                          icon={<BugReportIcon sx={{ fontSize: 12 }} />}
+                          label={`${nodeFindings.length} finding${nodeFindings.length === 1 ? '' : 's'}`}
+                          sx={{
+                            height: 18,
+                            fontSize: '0.625rem',
+                            fontFamily: '"JetBrains Mono", monospace',
+                            bgcolor: ss.bg,
+                            color: ss.color,
+                            '& .MuiChip-icon': { color: ss.color, ml: 0.5 },
                           }}
                         />
                       );
@@ -404,8 +507,52 @@ export default function TraceResultsView() {
                         synopsizing…
                       </Typography>
                     )}
+                  {nodeFindings.length > 0 && (
+                    <Stack spacing={0.5} sx={{ mt: 1, pt: 1, borderTop: '1px dashed', borderColor: 'divider' }}>
+                      {nodeFindings.map((f, i) => {
+                        const ss = SEVERITY_STYLE[f.severity];
+                        return (
+                          <Box key={i} sx={{ display: 'flex', gap: 0.75, alignItems: 'flex-start' }}>
+                            <Chip
+                              size="small"
+                              label={ss.label}
+                              sx={{
+                                height: 16,
+                                fontSize: '0.6rem',
+                                fontFamily: '"JetBrains Mono", monospace',
+                                bgcolor: ss.bg,
+                                color: ss.color,
+                                fontWeight: 600,
+                                flexShrink: 0,
+                                '& .MuiChip-label': { px: 0.75 },
+                              }}
+                            />
+                            <Box sx={{ minWidth: 0, flex: 1 }}>
+                              <Typography
+                                variant="caption"
+                                sx={{ display: 'block', fontWeight: 600, color: 'text.primary', lineHeight: 1.3 }}
+                              >
+                                {f.title}
+                                {f.lineNumber != null && (
+                                  <Box component="span" sx={{ ml: 0.75, color: 'text.disabled', fontFamily: '"JetBrains Mono", monospace', fontWeight: 400, fontSize: '0.65rem' }}>
+                                    :{f.lineNumber}
+                                  </Box>
+                                )}
+                              </Typography>
+                              {f.description && (
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.4 }}>
+                                  {f.description}
+                                </Typography>
+                              )}
+                            </Box>
+                          </Box>
+                        );
+                      })}
+                    </Stack>
+                  )}
                 </Paper>
-              ))}
+                );
+              })}
             </Stack>
           </Box>
         )}
