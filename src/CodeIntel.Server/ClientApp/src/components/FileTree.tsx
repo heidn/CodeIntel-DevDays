@@ -217,8 +217,16 @@ export default function FileTree({ workspace }: Props) {
     <SimpleTreeView
       defaultExpandedItems={defaultExpanded}
       sx={{
+        '--TreeView-itemChildrenIndentation': '16px',
         '& .MuiTreeItem-content': { py: 0.25, px: 0.5, borderRadius: 0.5 },
         '& .MuiTreeItem-label':   { fontSize: '0.8125rem' },
+        // Guide line running down the left edge of each expanded group
+        '& .MuiTreeItem-groupTransition': {
+          borderLeft: '1px solid',
+          borderColor: 'divider',
+          ml: '11px',
+          pl: '8px',
+        },
       }}
     >
       {projectTrees.map(({ tree }) => renderFolderNode(tree, true))}
