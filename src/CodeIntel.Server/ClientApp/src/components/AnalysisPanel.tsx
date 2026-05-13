@@ -9,6 +9,7 @@ import ResultsView from './ResultsView';
 import TracePanel from './TracePanel';
 import TraceResultsView from './TraceResultsView';
 import FilePreviewPanel from './FilePreviewPanel';
+import WelcomePanel from './WelcomePanel';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 
 function fileName(path: string): string {
@@ -101,53 +102,59 @@ export default function AnalysisPanel() {
           height: '100%',
         }}
       >
-        {/* Mode toggle: Analysis | Trace */}
-        <Stack
-          direction="row"
-          sx={{
-            px: 2,
-            py: 1,
-            borderBottom: '1px solid',
-            borderColor: 'divider',
-            bgcolor: 'background.paper',
-            flexShrink: 0,
-            alignItems: 'center',
-            gap: 1,
-          }}
-        >
-          <ToggleButtonGroup
-            value={paneMode}
-            exclusive
-            size="small"
-            onChange={(_, v) => v && setPaneMode(v)}
-            sx={{
-              '& .MuiToggleButton-root': {
-                py: 0.25, px: 1.25,
-                fontSize: '0.72rem',
-                textTransform: 'none',
-                border: '1px solid',
+        {!workspace ? (
+          <WelcomePanel />
+        ) : (
+          <>
+            {/* Mode toggle: Analysis | Trace */}
+            <Stack
+              direction="row"
+              sx={{
+                px: 2,
+                py: 1,
+                borderBottom: '1px solid',
                 borderColor: 'divider',
-                gap: 0.5,
-              },
-            }}
-          >
-            <ToggleButton value="analysis">
-              <SubjectIcon sx={{ fontSize: 14 }} /> Analysis
-            </ToggleButton>
-            <ToggleButton value="trace">
-              <AccountTreeIcon sx={{ fontSize: 14 }} /> Trace
-            </ToggleButton>
-          </ToggleButtonGroup>
-        </Stack>
+                bgcolor: 'background.paper',
+                flexShrink: 0,
+                alignItems: 'center',
+                gap: 1,
+              }}
+            >
+              <ToggleButtonGroup
+                value={paneMode}
+                exclusive
+                size="small"
+                onChange={(_, v) => v && setPaneMode(v)}
+                sx={{
+                  '& .MuiToggleButton-root': {
+                    py: 0.25, px: 1.25,
+                    fontSize: '0.72rem',
+                    textTransform: 'none',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    gap: 0.5,
+                  },
+                }}
+              >
+                <ToggleButton value="analysis">
+                  <SubjectIcon sx={{ fontSize: 14 }} /> Analysis
+                </ToggleButton>
+                <ToggleButton value="trace">
+                  <AccountTreeIcon sx={{ fontSize: 14 }} /> Trace
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Stack>
 
-        <Stack
-          sx={{ flex: 1, minHeight: 0 }}
-          divider={<Box sx={{ borderBottom: '1px solid', borderColor: 'divider' }} />}
-        >
-          {paneMode === 'analysis'
-            ? (<><PromptSelector /><ResultsView /></>)
-            : (<><TracePanel /><TraceResultsView /></>)}
-        </Stack>
+            <Stack
+              sx={{ flex: 1, minHeight: 0 }}
+              divider={<Box sx={{ borderBottom: '1px solid', borderColor: 'divider' }} />}
+            >
+              {paneMode === 'analysis'
+                ? (<><PromptSelector /><ResultsView /></>)
+                : (<><TracePanel /><TraceResultsView /></>)}
+            </Stack>
+          </>
+        )}
       </Box>
 
       {/* ── File preview pane (right, only when tabs are open) ── */}

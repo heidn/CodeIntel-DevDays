@@ -185,9 +185,15 @@ export default function SolutionPanel() {
             color: 'text.secondary',
           }}
         >
-          <Typography variant="caption" sx={{ textAlign: 'center', maxWidth: 240 }}>
-            Enter a path to a .sln, tsconfig.json, pom.xml, or project directory above and click load.
-          </Typography>
+          <Box sx={{ textAlign: 'center', maxWidth: 240 }}>
+            <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>
+              Step 1 — Load a project
+            </Typography>
+            <Typography variant="caption" color="text.disabled" sx={{ lineHeight: 1.5, display: 'block' }}>
+              Paste an absolute path to a <code>.sln</code>, <code>tsconfig.json</code>, or a folder of{' '}
+              <code>.sql</code> files — or use the browse button.
+            </Typography>
+          </Box>
         </Box>
       )}
     </Box>

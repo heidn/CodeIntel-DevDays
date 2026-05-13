@@ -9,6 +9,7 @@ import {
   Chip,
   CircularProgress,
   Alert,
+  Paper,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import SkullIcon from '@mui/icons-material/HeartBrokenOutlined';
@@ -18,6 +19,7 @@ import AutoStoriesIcon from '@mui/icons-material/AutoStoriesOutlined';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import CleaningServicesOutlinedIcon from '@mui/icons-material/CleaningServicesOutlined';
 import SpeedOutlinedIcon from '@mui/icons-material/SpeedOutlined';
+import PlaylistAddCheckOutlinedIcon from '@mui/icons-material/PlaylistAddCheckOutlined';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { getPresets, startAnalysis, estimateRun } from '../api/analysis';
@@ -217,6 +219,31 @@ export default function PromptSelector() {
         />
       )}
 
+      {/* Step 2 nudge: files not yet selected */}
+      {workspace && selectedFiles.size === 0 && (
+        <Paper
+          sx={{
+            mb: 2,
+            p: 1.5,
+            bgcolor: 'rgba(79,70,229,0.04)',
+            border: '1px solid rgba(79,70,229,0.15)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.5,
+          }}
+        >
+          <PlaylistAddCheckOutlinedIcon sx={{ fontSize: 18, color: 'primary.main', flexShrink: 0 }} />
+          <Box>
+            <Typography variant="caption" sx={{ fontWeight: 600, color: 'primary.main', display: 'block' }}>
+              Step 2 — Select files
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Check files or whole projects in the left panel, then pick a preset above and run.
+            </Typography>
+          </Box>
+        </Paper>
+      )}
+
       <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
         <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
           {selectedFiles.size > 0 && (
@@ -243,16 +270,6 @@ export default function PromptSelector() {
               onDelete={() => pinSnippet(null)}
               sx={{ bgcolor: 'rgba(79, 70, 229, 0.08)', color: 'primary.main' }}
             />
-          )}
-          {selectedFiles.size === 0 && workspace && (
-            <Typography variant="caption" color="warning.main">
-              Select files in the left panel to run analysis
-            </Typography>
-          )}
-          {!workspace && (
-            <Typography variant="caption" color="text.secondary">
-              Load a solution to begin
-            </Typography>
           )}
         </Stack>
         <Button
