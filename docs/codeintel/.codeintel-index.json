@@ -1,5 +1,16 @@
 [
   {
+    "filename": "2026-05-13-trace-callees-reportwriterwritetraceasync-b07ae5c7.md",
+    "completedAt": "2026-05-13T13:51:40.8267994Z",
+    "kind": "trace",
+    "entryPointFqn": "CodeIntel.Server.Services.ReportWriter.WriteTraceAsync(CodeIntel.Server.Models.TraceResult, CodeIntel.Server.Models.Workspace, string?, System.Threading.CancellationToken)",
+    "direction": "Callees",
+    "nodeCount": 8,
+    "depth": 1,
+    "truncated": false,
+    "durationSeconds": 82.4980007
+  },
+  {
     "filename": "2026-05-12-trace-both-reportwriterwritetraceasync-21f06a7f.md",
     "completedAt": "2026-05-12T20:44:49.1547746Z",
     "kind": "trace",
