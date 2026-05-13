@@ -1,8 +1,18 @@
 import { apiClient } from './client';
-import type { TraceRequest, TraceResult } from '../types';
+import type { TraceEntryPoint, TraceRequest, TraceResult, EntryPointCandidate } from '../types';
 
 export async function startTrace(req: TraceRequest): Promise<{ traceId: string }> {
   const { data } = await apiClient.post<{ traceId: string }>('/trace/run', req);
+  return data;
+}
+
+export async function resolveTraceCandidates(
+  workspaceId: string,
+  entryPoint: TraceEntryPoint,
+): Promise<EntryPointCandidate[]> {
+  const { data } = await apiClient.post<EntryPointCandidate[]>('/trace/candidates', {
+    workspaceId, entryPoint,
+  });
   return data;
 }
 

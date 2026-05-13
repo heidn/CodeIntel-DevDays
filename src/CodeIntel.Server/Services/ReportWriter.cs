@@ -6,7 +6,11 @@ using Microsoft.Extensions.Options;
 
 namespace CodeIntel.Server.Services;
 
-public record ReportWriteResult(string AbsolutePath, string RelativePath);
+public record ReportWriteResult(
+    string AbsolutePath,
+    string RelativePath,
+    int RedactionCount = 0,
+    IReadOnlyDictionary<string, int>? Redactions = null);
 
 public interface IReportWriter
 {
@@ -51,24 +55,26 @@ public class ReportWriter : IReportWriter
         var relativeFolder = NormalizeRelativeFolder(overrideOutputPath) ?? _options.ReportOutputPath;
         var outDir = Path.Combine(repoRoot, relativeFolder);
 
-        // Guard against escape outside the workspace root.
-        var resolvedOut = Path.GetFullPath(outDir);
-        var resolvedRoot = Path.GetFullPath(repoRoot);
-        if (!resolvedOut.StartsWith(resolvedRoot, StringComparison.OrdinalIgnoreCase))
+        if (!PathSafety.IsInside(outDir, repoRoot))
         {
-            _logger.LogWarning("Refused to write report outside workspace root: {Out}", resolvedOut);
+            _logger.LogWarning("Refused to write report outside workspace root: {Out}", outDir);
             return null;
         }
 
         try
         {
             Directory.CreateDirectory(outDir);
-            EnsureFolderReadme(outDir);
+            await EnsureFolderReadmeAsync(outDir, ct);
 
             var filename = BuildFilename(result);
             var fullPath = Path.Combine(outDir, filename);
             var md = _generator.GenerateMarkdown(result, filename);
-            await File.WriteAllTextAsync(fullPath, md, ct);
+            var scrub = SecretScrubber.Scrub(md);
+            await File.WriteAllTextAsync(fullPath, scrub.Scrubbed, ct);
+
+            if (scrub.HasHits)
+                _logger.LogWarning("Redacted {Count} secret-like value(s) before writing {Path}: {Hits}",
+                    scrub.TotalRedactions, fullPath, string.Join(",", scrub.Hits.Keys));
 
             if (_options.MaintainIndex)
                 await UpdateIndexAsync(outDir, filename, result, ct);
@@ -78,7 +84,7 @@ public class ReportWriter : IReportWriter
                 .Replace('\\', '/');
 
             _logger.LogInformation("Wrote analysis report to {Path}", fullPath);
-            return new ReportWriteResult(fullPath, relative);
+            return new ReportWriteResult(fullPath, relative, scrub.TotalRedactions, scrub.Hits);
         }
         catch (Exception ex)
         {
@@ -99,23 +105,26 @@ public class ReportWriter : IReportWriter
         var relativeFolder = NormalizeRelativeFolder(overrideOutputPath) ?? _options.ReportOutputPath;
         var outDir = Path.Combine(repoRoot, relativeFolder);
 
-        var resolvedOut = Path.GetFullPath(outDir);
-        var resolvedRoot = Path.GetFullPath(repoRoot);
-        if (!resolvedOut.StartsWith(resolvedRoot, StringComparison.OrdinalIgnoreCase))
+        if (!PathSafety.IsInside(outDir, repoRoot))
         {
-            _logger.LogWarning("Refused to write trace report outside workspace root: {Out}", resolvedOut);
+            _logger.LogWarning("Refused to write trace report outside workspace root: {Out}", outDir);
             return null;
         }
 
         try
         {
             Directory.CreateDirectory(outDir);
-            EnsureFolderReadme(outDir);
+            await EnsureFolderReadmeAsync(outDir, ct);
 
             var filename = BuildTraceFilename(result);
             var fullPath = Path.Combine(outDir, filename);
             var md = _generator.GenerateTraceMarkdown(result, filename);
-            await File.WriteAllTextAsync(fullPath, md, ct);
+            var scrub = SecretScrubber.Scrub(md);
+            await File.WriteAllTextAsync(fullPath, scrub.Scrubbed, ct);
+
+            if (scrub.HasHits)
+                _logger.LogWarning("Redacted {Count} secret-like value(s) before writing {Path}: {Hits}",
+                    scrub.TotalRedactions, fullPath, string.Join(",", scrub.Hits.Keys));
 
             if (_options.MaintainIndex)
                 await UpdateIndexForTraceAsync(outDir, filename, result, ct);
@@ -125,7 +134,7 @@ public class ReportWriter : IReportWriter
                 .Replace('\\', '/');
 
             _logger.LogInformation("Wrote trace report to {Path}", fullPath);
-            return new ReportWriteResult(fullPath, relative);
+            return new ReportWriteResult(fullPath, relative, scrub.TotalRedactions, scrub.Hits);
         }
         catch (Exception ex)
         {
@@ -203,9 +212,9 @@ public class ReportWriter : IReportWriter
     }
 
     private static string ResolveWorkspaceRoot(Workspace ws) =>
-        File.Exists(ws.ProjectPath)
+        ws.RootFolder ?? (File.Exists(ws.ProjectPath)
             ? Path.GetDirectoryName(ws.ProjectPath) ?? ""
-            : ws.ProjectPath;
+            : ws.ProjectPath);
 
     private static string BuildFilename(AnalysisResult r)
     {
@@ -229,7 +238,7 @@ public class ReportWriter : IReportWriter
         return string.IsNullOrEmpty(slug) ? "report" : slug;
     }
 
-    private static void EnsureFolderReadme(string outDir)
+    private static async Task EnsureFolderReadmeAsync(string outDir, CancellationToken ct)
     {
         var readmePath = Path.Combine(outDir, "README.md");
         if (File.Exists(readmePath)) return;
@@ -247,7 +256,7 @@ public class ReportWriter : IReportWriter
             These files are intended to be committed and shared with the team as
             living documentation. Delete freely; the tool will regenerate.
             """;
-        File.WriteAllText(readmePath, content);
+        await File.WriteAllTextAsync(readmePath, content, ct);
     }
 
     private async Task UpdateIndexAsync(string outDir, string filename, AnalysisResult result, CancellationToken ct)

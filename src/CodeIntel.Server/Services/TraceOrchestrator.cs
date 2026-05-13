@@ -86,7 +86,8 @@ public class TraceOrchestrator : ITraceOrchestrator
                 AnalysisEvents.Status("Resolving entry point and walking call graph..."), ct);
 
             graph = await _walker.BuildGraphAsync(
-                request.WorkspaceId, request.EntryPoint, request.Direction, request.Depth, ct);
+                request.WorkspaceId, request.EntryPoint, request.Direction, request.Depth, ct,
+                request.PreferredFqn);
 
             if (graph is null)
             {

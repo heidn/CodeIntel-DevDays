@@ -1,6 +1,7 @@
 using CodeIntel.Server.Models;
 using CodeIntel.Server.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CodeIntel.Server.Controllers;
 
@@ -12,6 +13,7 @@ public class TraceController : ControllerBase
     private readonly ITraceResultStore _store;
     private readonly IReportWriter _writer;
     private readonly IWorkspaceService _workspace;
+    private readonly ITraceWalker _walker;
     private readonly ILogger<TraceController> _logger;
 
     // Cancellation reuses POST /api/analysis/{id}/cancel — the registry is keyed by Guid
@@ -22,16 +24,32 @@ public class TraceController : ControllerBase
         ITraceResultStore store,
         IReportWriter writer,
         IWorkspaceService workspace,
+        ITraceWalker walker,
         ILogger<TraceController> logger)
     {
         _orchestrator = orchestrator;
         _store = store;
         _writer = writer;
         _workspace = workspace;
+        _walker = walker;
         _logger = logger;
     }
 
+    public record CandidatesRequest(string WorkspaceId, TraceEntryPoint EntryPoint);
+
+    [HttpPost("candidates")]
+    public async Task<IActionResult> Candidates([FromBody] CandidatesRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.WorkspaceId))
+            return BadRequest(new { error = "workspaceId is required" });
+        if (string.IsNullOrWhiteSpace(req.EntryPoint.MethodName))
+            return Ok(new List<EntryPointCandidate>()); // candidates only relevant for name-based lookup
+        var candidates = await _walker.ResolveCandidatesAsync(req.WorkspaceId, req.EntryPoint, ct);
+        return Ok(candidates);
+    }
+
     [HttpPost("run")]
+    [EnableRateLimiting("analysis-run")]
     public async Task<IActionResult> Run([FromBody] TraceRequest req, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(req.WorkspaceId))
@@ -83,7 +101,9 @@ public class TraceController : ControllerBase
             traceId = id,
             absolutePath = writeResult.AbsolutePath,
             relativePath = writeResult.RelativePath,
-            copilotReference = $"#file:{writeResult.RelativePath}"
+            copilotReference = $"#file:{writeResult.RelativePath}",
+            redactionCount = writeResult.RedactionCount,
+            redactions = writeResult.Redactions,
         });
     }
 }

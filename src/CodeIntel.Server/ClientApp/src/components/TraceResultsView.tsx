@@ -20,6 +20,9 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlin
 import StopIcon from '@mui/icons-material/StopCircleOutlined';
 import StorageIcon from '@mui/icons-material/StorageOutlined';
 import CloudIcon from '@mui/icons-material/CloudOutlined';
+import LaunchIcon from '@mui/icons-material/LaunchOutlined';
+import WarningAmberIcon from '@mui/icons-material/WarningAmberOutlined';
+import { openInVsCode } from '../utils/openInVsCode';
 import type { NodeKind } from '../types';
 
 const NODE_KIND_STYLE: Record<NodeKind, { label: string; bg: string; color: string; icon: typeof StorageIcon } | null> = {
@@ -56,6 +59,7 @@ export default function TraceResultsView() {
   const cancelReason     = useTraceStore((s) => s.cancelReason);
   const currentTraceId   = useTraceStore((s) => s.currentTraceId);
   const runStartedAt     = useTraceStore((s) => s.runStartedAt);
+  const lastEventAt      = useTraceStore((s) => s.lastEventAt);
   const requestCancel    = useTraceStore((s) => s.requestCancel);
   const reset            = useTraceStore((s) => s.reset);
   const setGraph         = useTraceStore((s) => s.setGraph);
@@ -114,6 +118,14 @@ export default function TraceResultsView() {
     ? Math.floor((nowMs - runStartedAt) / 1000)
     : 0;
 
+  // Surface the same "no output for Ns" idle warn the analysis view shows when
+  // the per-node synopsis call has stalled.
+  const IDLE_WARN_SECONDS = 30;
+  const idleSec = lastEventAt && isActive
+    ? Math.floor((nowMs - lastEventAt) / 1000)
+    : 0;
+  const showIdleWarn = isActive && idleSec >= IDLE_WARN_SECONDS;
+
   const synopsizedCount = nodes.filter((n) => n.synopsis).length;
 
   async function handleSave() {
@@ -161,6 +173,14 @@ export default function TraceResultsView() {
               size="small"
               label={`cancelling… · ${elapsedSec}s`}
               sx={{ bgcolor: 'rgba(202,138,4,0.08)', color: 'warning.main', fontFamily: '"JetBrains Mono", monospace' }}
+            />
+          )}
+          {showIdleWarn && (
+            <Chip
+              size="small"
+              icon={<WarningAmberIcon sx={{ fontSize: 14 }} />}
+              label={`no output for ${idleSec}s`}
+              sx={{ bgcolor: 'rgba(202,138,4,0.10)', color: 'warning.main', fontFamily: '"JetBrains Mono", monospace' }}
             />
           )}
           {nodes.length > 0 && (
@@ -354,9 +374,23 @@ export default function TraceResultsView() {
                       );
                     })()}
                     {node.filePath && (
-                      <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"JetBrains Mono", monospace', ml: 'auto', fontSize: '0.6875rem' }}>
-                        {node.filePath.split(/[\\/]/).pop()}{node.line ? `:${node.line}` : ''}
-                      </Typography>
+                      <Stack direction="row" sx={{ ml: 'auto', alignItems: 'center', gap: 0.5 }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.6875rem' }}>
+                          {node.filePath.split(/[\\/]/).pop()}{node.line ? `:${node.line}` : ''}
+                        </Typography>
+                        <Tooltip title="Open in VS Code">
+                          <IconButton
+                            size="small"
+                            sx={{ p: 0.25 }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openInVsCode(node.filePath!, node.line ?? undefined);
+                            }}
+                          >
+                            <LaunchIcon sx={{ fontSize: 12 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </Stack>
                     )}
                   </Stack>
                   {node.synopsis

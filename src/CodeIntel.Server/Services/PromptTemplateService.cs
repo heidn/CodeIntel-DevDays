@@ -23,6 +23,13 @@ public interface IPromptTemplateService
 public class PromptTemplateService : IPromptTemplateService
 {
     private readonly Dictionary<string, string> _templates = new();
+    private readonly ISkillRouter? _skillRouter;
+
+    public PromptTemplateService(ISkillRouter? skillRouter = null)
+    {
+        _skillRouter = skillRouter;
+        LoadEmbeddedTemplates();
+    }
 
     private static readonly IReadOnlyList<string> NonSqlLanguages = new[] { "cSharp", "typeScript", "java" };
     private static readonly IReadOnlyList<string> SqlOnly        = new[] { "sql" };
@@ -47,11 +54,6 @@ public class PromptTemplateService : IPromptTemplateService
         new("efficiency-review", "Efficiency Review",
             "Row-by-row patterns, implicit conversions, function-on-indexed-column, missing binds.", "speed", SqlOnly),
     };
-
-    public PromptTemplateService()
-    {
-        LoadEmbeddedTemplates();
-    }
 
     public IReadOnlyList<PresetInfo> GetPresets() => _presets;
 
@@ -95,7 +97,8 @@ public class PromptTemplateService : IPromptTemplateService
 
     public string BuildAgentPrompt(AnalysisRequest request, CodeContext context)
     {
-        var systemPrompt = BuildAgentSystemPrompt(context.Language);
+        var systemPrompt = BuildAgentSystemPrompt(context.Language)
+            + (_skillRouter?.BuildAddendum(context) ?? "");
         var taskBlock = request.Mode switch
         {
             AnalysisMode.Preset => GetTemplate(request.PresetKey ?? throw new InvalidOperationException("Preset key required")),
@@ -128,7 +131,8 @@ public class PromptTemplateService : IPromptTemplateService
         IReadOnlyList<ConversationTurn> history,
         IReadOnlyList<ContextFulfillment> fulfillments)
     {
-        var systemPrompt = BuildAgentSystemPrompt(initialContext.Language);
+        var systemPrompt = BuildAgentSystemPrompt(initialContext.Language)
+            + (_skillRouter?.BuildAddendum(initialContext) ?? "");
         var taskBlock = request.Mode switch
         {
             AnalysisMode.Preset => GetTemplate(request.PresetKey ?? throw new InvalidOperationException("Preset key required")),

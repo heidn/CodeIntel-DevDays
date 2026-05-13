@@ -19,6 +19,13 @@ src/CodeIntel.Server/ClientApp/vite.config.d.ts
 models/*.gguf
 models/*.bin
 
+# Runtime SQLite database (created on first launch by CodeIntelDb)
+data/
+src/CodeIntel.Server/data/
+src/CodeIntel.Server/Data/codeintel.db
+src/CodeIntel.Server/Data/codeintel.db-shm
+src/CodeIntel.Server/Data/codeintel.db-wal
+
 # IDE
 .idea/
 *.code-workspace

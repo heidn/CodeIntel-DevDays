@@ -23,4 +23,33 @@ public class AnalysisOptions
     public int MaxAgenticIterations { get; set; } = 3;
     public int IdleTokenTimeoutSeconds { get; set; } = 90;
     public int OverallTimeoutSeconds { get; set; } = 600;
+    /// <summary>
+    /// LRU cap on persisted analysis/trace rows. Older rows are pruned after each save.
+    /// </summary>
+    public int MaxPersistedResults { get; set; } = 200;
+    /// <summary>
+    /// LRU cap on loaded Roslyn workspaces. Evicting frees the (often large) MSBuildWorkspace.
+    /// </summary>
+    public int MaxLoadedWorkspaces { get; set; } = 3;
+    /// <summary>
+    /// When true, repeat runs with the same {presetKey, modelName, file-content hashes}
+    /// short-circuit to the cached result instead of re-prompting.
+    /// </summary>
+    public bool EnableResultCache { get; set; } = true;
+    /// <summary>
+    /// Maximum age of a cache hit before it's ignored and the analysis re-runs.
+    /// </summary>
+    public int ResultCacheTtlHours { get; set; } = 24 * 7;
+    /// <summary>
+    /// Per-IP rate limit: how many runs in the window before further requests are rejected.
+    /// </summary>
+    public int RateLimitRunsPerMinute { get; set; } = 5;
+}
+
+public class DataOptions
+{
+    /// <summary>
+    /// Absolute or content-root-relative path to the SQLite file backing analysis history.
+    /// </summary>
+    public string DatabasePath { get; set; } = "data/codeintel.db";
 }

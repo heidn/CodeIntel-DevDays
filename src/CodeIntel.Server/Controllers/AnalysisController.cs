@@ -1,6 +1,7 @@
 using CodeIntel.Server.Models;
 using CodeIntel.Server.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CodeIntel.Server.Controllers;
 
@@ -13,19 +14,36 @@ public class AnalysisController : ControllerBase
     private readonly IPromptTemplateService _prompts;
     private readonly ILlmService _llm;
     private readonly IAnalysisCancellationRegistry _cancel;
+    private readonly IAnalysisEstimator _estimator;
 
     public AnalysisController(
         IAnalysisOrchestrator orchestrator,
         IAnalysisResultStore store,
         IPromptTemplateService prompts,
         ILlmService llm,
-        IAnalysisCancellationRegistry cancel)
+        IAnalysisCancellationRegistry cancel,
+        IAnalysisEstimator estimator)
     {
         _orchestrator = orchestrator;
         _store = store;
         _prompts = prompts;
         _llm = llm;
         _cancel = cancel;
+        _estimator = estimator;
+    }
+
+    public record EstimateRequestBody(string WorkspaceId, List<string> SelectedFilePaths);
+
+    [HttpPost("estimate")]
+    public async Task<IActionResult> Estimate([FromBody] EstimateRequestBody body, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(body.WorkspaceId))
+            return BadRequest(new { error = "workspaceId is required" });
+        if (body.SelectedFilePaths.Count == 0)
+            return Ok(new EstimateResult(0, 0, 0, "no files selected"));
+
+        var estimate = await _estimator.EstimateAsync(body.WorkspaceId, body.SelectedFilePaths, ct);
+        return Ok(estimate);
     }
 
     [HttpGet("presets")]
@@ -40,6 +58,7 @@ public class AnalysisController : ControllerBase
     });
 
     [HttpPost("run")]
+    [EnableRateLimiting("analysis-run")]
     public async Task<IActionResult> Run([FromBody] AnalysisRequest req, CancellationToken ct)
     {
         if (req.SelectedFilePaths.Count == 0)
@@ -72,5 +91,24 @@ public class AnalysisController : ControllerBase
         return ok
             ? Ok(new { cancelled = true })
             : NotFound(new { error = "Analysis is not currently running." });
+    }
+
+    /// <summary>
+    /// Diffs the findings between two analyses. Useful for "what changed since last run?".
+    /// </summary>
+    [HttpGet("{id}/diff/{previousId}")]
+    public IActionResult Diff(Guid id, Guid previousId)
+    {
+        var after  = _store.Get(id);
+        var before = _store.Get(previousId);
+        if (after is null || before is null)
+            return NotFound(new { error = "One or both analyses were not found." });
+        var diff = FindingsComparer.Compare(before, after);
+        return Ok(new
+        {
+            beforeId = previousId, afterId = id,
+            added = diff.Added, resolved = diff.Resolved, persisted = diff.Persisted,
+            counts = new { added = diff.Added.Count, resolved = diff.Resolved.Count, persisted = diff.Persisted.Count },
+        });
     }
 }

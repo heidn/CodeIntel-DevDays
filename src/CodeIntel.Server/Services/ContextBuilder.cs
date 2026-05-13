@@ -49,7 +49,8 @@ public class ContextBuilder : IContextBuilder
         if (paths.Count == 0)
             throw new InvalidOperationException("No files selected for analysis");
 
-        var rootDir = File.Exists(ws.ProjectPath) ? Path.GetDirectoryName(ws.ProjectPath)! : ws.ProjectPath;
+        var rootDir = ws.RootFolder
+            ?? (File.Exists(ws.ProjectPath) ? Path.GetDirectoryName(ws.ProjectPath)! : ws.ProjectPath);
 
         var files = new List<FileContext>();
         var totalTokens = 0;

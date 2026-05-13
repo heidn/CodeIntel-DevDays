@@ -1,6 +1,7 @@
 using CodeIntel.Server.Models;
 using CodeIntel.Server.Services;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace CodeIntel.Server.Tests;
 
@@ -51,7 +52,7 @@ public class PlSqlRepoResolverTests : IAsyncLifetime
             END;
             """);
 
-        _workspace = new WorkspaceService(NullLogger<WorkspaceService>.Instance);
+        _workspace = new WorkspaceService(Options.Create(new AnalysisOptions()), NullLogger<WorkspaceService>.Instance);
         var ws = await _workspace.LoadAsync(_root);
         _workspaceId = ws.Id;
 

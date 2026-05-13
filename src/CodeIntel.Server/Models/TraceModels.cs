@@ -41,7 +41,19 @@ public record TraceRequest(
     TraceEntryPoint EntryPoint,
     TraceDirection Direction,
     int Depth,
-    Guid? TraceId = null
+    Guid? TraceId = null,
+    string? PreferredFqn = null
+);
+
+/// <summary>
+/// A single resolved entry-point candidate returned by the disambiguation endpoint.
+/// </summary>
+public record EntryPointCandidate(
+    string Fqn,
+    string DisplayName,
+    string FilePath,
+    int Line,
+    string Signature
 );
 
 public record TraceNode(
@@ -55,7 +67,7 @@ public record TraceNode(
     NodeKind Kind = NodeKind.Normal
 );
 
-public record TraceEdge(string FromId, string ToId, EdgeKind Kind);
+public record TraceEdge(string FromId, string ToId, EdgeKind Kind, bool IsBackEdge = false);
 
 public record TraceResult(
     Guid Id,

@@ -24,9 +24,11 @@ import SaveAltIcon from '@mui/icons-material/SaveAltOutlined';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
 import StopIcon from '@mui/icons-material/StopCircleOutlined';
 import WarningAmberIcon from '@mui/icons-material/WarningAmberOutlined';
+import LaunchIcon from '@mui/icons-material/LaunchOutlined';
 import { useAnalysisStore } from '../stores/analysisStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { downloadReportUrl, saveReport } from '../api/analysis';
+import { openInVsCode } from '../utils/openInVsCode';
 import CodeAnnotationView from './CodeAnnotationView';
 import type { Finding, Severity } from '../types';
 
@@ -76,13 +78,24 @@ function FindingCard({ finding, index }: { finding: Finding; index: number }) {
           #{index + 1}
         </Typography>
         {finding.filePath && (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ fontFamily: '"JetBrains Mono", monospace', ml: 'auto', fontSize: '0.6875rem' }}
-          >
-            {finding.filePath}{finding.lineNumber && `:${finding.lineNumber}`}
-          </Typography>
+          <Stack direction="row" sx={{ ml: 'auto', alignItems: 'center', gap: 0.5 }}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.6875rem' }}
+            >
+              {finding.filePath}{finding.lineNumber && `:${finding.lineNumber}`}
+            </Typography>
+            <Tooltip title="Open in VS Code">
+              <IconButton
+                size="small"
+                sx={{ p: 0.25 }}
+                onClick={() => openInVsCode(finding.filePath!, finding.lineNumber ?? undefined)}
+              >
+                <LaunchIcon sx={{ fontSize: 12 }} />
+              </IconButton>
+            </Tooltip>
+          </Stack>
         )}
       </Stack>
       <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>

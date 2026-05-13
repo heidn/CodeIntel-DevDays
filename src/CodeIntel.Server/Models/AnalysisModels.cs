@@ -69,5 +69,7 @@ public record AnalysisResult(
     int ContextTokens,
     TimeSpan Duration,
     string WorkspaceId,
-    string? ReportPath = null
+    string? ReportPath = null,
+    string? WorkspaceRoot = null,
+    string? ContentHash = null
 );

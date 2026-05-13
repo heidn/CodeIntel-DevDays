@@ -20,7 +20,8 @@ import CleaningServicesOutlinedIcon from '@mui/icons-material/CleaningServicesOu
 import SpeedOutlinedIcon from '@mui/icons-material/SpeedOutlined';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { getPresets, startAnalysis } from '../api/analysis';
+import { getPresets, startAnalysis, estimateRun } from '../api/analysis';
+import type { EstimateResult } from '../api/analysis';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useAnalysisStore } from '../stores/analysisStore';
 import { getAnalysisHub } from '../api/signalr';
@@ -71,6 +72,31 @@ export default function PromptSelector() {
     if (presets.some((p) => p.key === selectedPresetKey)) return;
     setPreset(null);
   }, [selectedPresetKey, presets, setPreset]);
+
+  // Debounced cost/time estimate when the selection changes.
+  const [estimate, setEstimate] = useState<EstimateResult | null>(null);
+  useEffect(() => {
+    if (!workspace || selectedFiles.size === 0) {
+      setEstimate(null);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      try {
+        const result = await estimateRun(workspace.id, Array.from(selectedFiles));
+        setEstimate(result);
+      } catch {
+        setEstimate(null);
+      }
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [workspace, selectedFiles]);
+
+  function formatDuration(seconds: number): string {
+    if (seconds < 60) return `~${Math.round(seconds)}s`;
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return s === 0 ? `~${m}m` : `~${m}m ${s}s`;
+  }
 
   const runMutation = useMutation({
     mutationFn: async (req: Omit<AnalysisRequest, 'analysisId'>) => {
@@ -198,6 +224,15 @@ export default function PromptSelector() {
               size="small"
               label={`${selectedFiles.size} ${selectedFiles.size === 1 ? 'file' : 'files'} selected`}
               sx={{ bgcolor: 'rgba(79, 70, 229, 0.08)', color: 'primary.main' }}
+            />
+          )}
+          {estimate && estimate.estimatedTokens > 0 && (
+            <Chip
+              size="small"
+              variant="outlined"
+              title={estimate.explanation}
+              label={`~${estimate.estimatedTokens.toLocaleString()} tokens · ${formatDuration(estimate.estimatedSeconds)}`}
+              sx={{ color: 'text.secondary', borderStyle: estimate.sampleSize < 2 ? 'dashed' : 'solid' }}
             />
           )}
           {pinnedSnippet && (

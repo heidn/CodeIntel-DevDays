@@ -4,6 +4,7 @@ using CodeIntel.Server.Models;
 using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
+using Microsoft.Extensions.Options;
 using Workspace = CodeIntel.Server.Models.Workspace;
 
 namespace CodeIntel.Server.Services;
@@ -23,7 +24,10 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
     private static readonly object _msbuildLock = new();
 
     private readonly ILogger<WorkspaceService> _logger;
+    private readonly AnalysisOptions _options;
     private readonly ConcurrentDictionary<string, LoadedWorkspace> _workspaces = new();
+    private readonly object _lruLock = new();
+    private readonly LinkedList<string> _lruOrder = new();
 
     private static readonly string[] TsExtensions = [".ts", ".tsx", ".js", ".jsx"];
     private static readonly string[] JavaExtensions = [".java"];
@@ -33,7 +37,33 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
     private static readonly string[] JavaExcludeDirs = ["target", "build", ".gradle"];
     private static readonly string[] TsExcludePatterns = [".min.js", ".d.ts"];
 
-    public WorkspaceService(ILogger<WorkspaceService> logger) => _logger = logger;
+    public WorkspaceService(IOptions<AnalysisOptions> options, ILogger<WorkspaceService> logger)
+    {
+        _options = options.Value;
+        _logger = logger;
+    }
+
+    private void TouchLru(string workspaceId)
+    {
+        lock (_lruLock)
+        {
+            _lruOrder.Remove(workspaceId);
+            _lruOrder.AddFirst(workspaceId);
+
+            var cap = Math.Max(1, _options.MaxLoadedWorkspaces);
+            while (_lruOrder.Count > cap)
+            {
+                var evictId = _lruOrder.Last!.Value;
+                _lruOrder.RemoveLast();
+                if (_workspaces.TryRemove(evictId, out var evicted))
+                {
+                    try { evicted.MsWorkspace?.Dispose(); }
+                    catch (Exception ex) { _logger.LogDebug(ex, "Workspace dispose error on LRU eviction"); }
+                    _logger.LogInformation("Evicted LRU workspace {Id} ({Project})", evictId, evicted.Workspace.ProjectName);
+                }
+            }
+        }
+    }
 
     public async Task<Workspace> LoadAsync(string path, CancellationToken ct = default)
     {
@@ -153,9 +183,12 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
             ProjectName: Path.GetFileNameWithoutExtension(slnPath),
             Projects: projects,
             LoadedAt: DateTime.UtcNow,
-            Language: Language.CSharp
+            Language: Language.CSharp,
+            RootFolder: Path.GetDirectoryName(slnPath),
+            EntryFile: slnPath
         );
         _workspaces[workspaceId] = new LoadedWorkspace(workspace, msWorkspace, solution);
+        TouchLru(workspaceId);
         _logger.LogInformation("Loaded {ProjectCount} projects, {FileCount} files in workspace {Id}",
             projects.Count, projects.Sum(p => p.Files.Count), workspaceId);
         return workspace;
@@ -235,9 +268,12 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
             ProjectName: Path.GetFileName(rootDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
             Projects: projects,
             LoadedAt: DateTime.UtcNow,
-            Language: language
+            Language: language,
+            RootFolder: rootDir,
+            EntryFile: File.Exists(path) ? path : null
         );
         _workspaces[workspaceId] = new LoadedWorkspace(workspace, null, null);
+        TouchLru(workspaceId);
         _logger.LogInformation("Scanned {FileCount} {Language} files in workspace {Id}",
             projects.Sum(p => p.Files.Count), language, workspaceId);
         return workspace;
@@ -252,15 +288,14 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
     public async Task<string> ReadFileAsync(string workspaceId, string path, CancellationToken ct = default)
     {
         var ws = GetWorkspace(workspaceId) ?? throw new InvalidOperationException("Workspace not loaded");
-        var rootDir = File.Exists(ws.ProjectPath) ? Path.GetDirectoryName(ws.ProjectPath)! : ws.ProjectPath;
+        var rootDir = ws.RootFolder ?? throw new InvalidOperationException("Workspace has no resolved root folder.");
 
         var absolutePath = Path.IsPathRooted(path) ? path : Path.Combine(rootDir, path);
-        var resolved = Path.GetFullPath(absolutePath);
-        var resolvedRoot = Path.GetFullPath(rootDir);
 
-        if (!resolved.StartsWith(resolvedRoot, StringComparison.OrdinalIgnoreCase))
+        if (!PathSafety.IsInside(absolutePath, rootDir))
             throw new UnauthorizedAccessException("Path is outside workspace root.");
 
+        var resolved = Path.GetFullPath(absolutePath);
         if (!File.Exists(resolved))
             throw new FileNotFoundException($"File not found: {resolved}");
 

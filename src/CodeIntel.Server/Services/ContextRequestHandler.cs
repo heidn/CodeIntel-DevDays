@@ -124,7 +124,9 @@ public class ContextRequestHandler : IContextRequestHandler
 
     private async Task<string?> FulfillMethodAsync(string workspaceId, string methodName, CancellationToken ct)
     {
-        // Try Roslyn semantic lookup
+        // Try Roslyn semantic lookup. Roslyn already knows where each method
+        // starts AND ends; emit the symbol's full syntax rather than counting
+        // lines from the declaration (which over- or under-shoots).
         var solution = _workspace.GetRoslynSolution(workspaceId);
         if (solution != null)
         {
@@ -136,13 +138,13 @@ public class ContextRequestHandler : IContextRequestHandler
 
                 foreach (var sym in symbols.Take(1))
                 {
-                    var location = sym.Locations.FirstOrDefault(l => l.IsInSource);
-                    if (location?.SourceTree == null) continue;
-                    var filePath = location.SourceTree.FilePath;
-                    if (!File.Exists(filePath)) continue;
-                    var content = await File.ReadAllTextAsync(filePath, ct);
-                    var snippet = ExtractMethodSnippet(content, methodName, location.GetLineSpan().StartLinePosition.Line);
-                    return FormatSnippetBlock(filePath, snippet ?? content);
+                    var declRef = sym.DeclaringSyntaxReferences.FirstOrDefault();
+                    if (declRef is null) continue;
+                    var syntax = await declRef.GetSyntaxAsync(ct);
+                    var source = syntax.ToFullString();
+                    if (string.IsNullOrWhiteSpace(source)) continue;
+                    var filePath = declRef.SyntaxTree.FilePath;
+                    return FormatSnippetBlock(filePath, source);
                 }
             }
         }
@@ -290,11 +292,4 @@ public class ContextRequestHandler : IContextRequestHandler
         return sb.ToString();
     }
 
-    private static string? ExtractMethodSnippet(string fileContent, string methodName, int declarationLine)
-    {
-        var lines = fileContent.Split('\n');
-        if (declarationLine >= lines.Length) return null;
-        var end = Math.Min(lines.Length - 1, declarationLine + MaxSnippetLines);
-        return string.Join('\n', lines[declarationLine..(end + 1)]);
-    }
 }

@@ -28,6 +28,15 @@
     <!-- Web + streaming -->
     <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Version="9.0.0" />
 
+    <!-- Persistence -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+
+    <!-- PL/SQL grammar (B2). Antlr4BuildTasks runs the ANTLR jar at build time and
+         emits C# from any .g4 in the project. Antlr4.Runtime.Standard ships the runtime
+         consumed by the generated lexer/parser. -->
+    <PackageReference Include="Antlr4.Runtime.Standard" Version="4.13.1" />
+    <PackageReference Include="Antlr4BuildTasks" Version="12.8.0" PrivateAssets="all" />
+
     <!-- Logging -->
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
@@ -36,6 +45,15 @@
   <ItemGroup>
     <!-- Embed prompt templates as resources -->
     <EmbeddedResource Include="Prompts\*.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ANTLR grammar files — codegen emits to obj/{Configuration}/{TFM}/antlr -->
+    <Antlr4 Include="Grammar\PlSqlRefs.g4">
+      <Listener>false</Listener>
+      <Visitor>true</Visitor>
+      <Package>CodeIntel.Server.Grammar</Package>
+    </Antlr4>
   </ItemGroup>
 
   <ItemGroup>

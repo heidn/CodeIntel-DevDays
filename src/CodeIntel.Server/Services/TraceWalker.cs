@@ -12,6 +12,16 @@ public interface ITraceWalker
         TraceEntryPoint entryPoint,
         TraceDirection direction,
         int depth,
+        CancellationToken ct,
+        string? preferredFqn = null);
+
+    /// <summary>
+    /// Resolves an entry-point query to its candidate <see cref="IMethodSymbol"/>s.
+    /// Used by the disambiguation endpoint to surface overloads to the UI.
+    /// </summary>
+    Task<List<EntryPointCandidate>> ResolveCandidatesAsync(
+        string workspaceId,
+        TraceEntryPoint entryPoint,
         CancellationToken ct);
 
     string BuildMermaid(TraceGraph graph, TraceDirection direction);
@@ -21,10 +31,15 @@ public class TraceWalker : ITraceWalker
 {
     // Per-node fan-out cap to keep the graph readable and the synopsis cost bounded.
     private const int MaxBranchWidth = 8;
+    // Hard ceiling on total nodes in a single trace — protects against god-class
+    // entry points that would otherwise produce hundreds of nodes and unreadable
+    // Mermaid output. Excess hits flag `truncated=true`.
+    private const int MaxTotalNodes = 100;
     private const int MaxBodyChars = 2000;
 
     private readonly IWorkspaceService _workspace;
     private readonly ILogger<TraceWalker> _logger;
+    private readonly CallersCache _callersCache = new();
 
     public TraceWalker(IWorkspaceService workspace, ILogger<TraceWalker> logger)
     {
@@ -32,12 +47,39 @@ public class TraceWalker : ITraceWalker
         _logger = logger;
     }
 
+    /// <summary>
+    /// Per-run memo for <see cref="SymbolFinder.FindCallersAsync"/>. The same method
+    /// can be visited multiple times during a BFS (different branches converge on it),
+    /// and FindCallersAsync is the dominant cost on large solutions. Cache is cleared
+    /// at the start of each <see cref="BuildGraphAsync"/> call.
+    /// </summary>
+    private sealed class CallersCache
+    {
+        private readonly Dictionary<string, IReadOnlyList<ISymbol>> _byFqn =
+            new(StringComparer.Ordinal);
+
+        public void Clear() => _byFqn.Clear();
+
+        public async ValueTask<IReadOnlyList<ISymbol>> GetOrAddAsync(
+            IMethodSymbol method, Solution solution, CancellationToken ct)
+        {
+            var key = method.ToDisplayString();
+            if (_byFqn.TryGetValue(key, out var cached)) return cached;
+
+            var callers = await SymbolFinder.FindCallersAsync(method, solution, ct);
+            var list = callers.Select(c => c.CallingSymbol).ToList();
+            _byFqn[key] = list;
+            return list;
+        }
+    }
+
     public async Task<TraceGraph?> BuildGraphAsync(
         string workspaceId,
         TraceEntryPoint entryPoint,
         TraceDirection direction,
         int depth,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? preferredFqn = null)
     {
         var solution = _workspace.GetRoslynSolution(workspaceId);
         if (solution == null)
@@ -46,7 +88,7 @@ public class TraceWalker : ITraceWalker
             return null;
         }
 
-        var entrySymbol = await ResolveEntryPointAsync(solution, entryPoint, ct);
+        var entrySymbol = await ResolveEntryPointAsync(solution, entryPoint, ct, preferredFqn);
         if (entrySymbol is not IMethodSymbol entryMethod)
         {
             _logger.LogWarning("Could not resolve entry point: {Name} / {File}:{Line}",
@@ -57,15 +99,16 @@ public class TraceWalker : ITraceWalker
         entryMethod = (entryMethod.OriginalDefinition as IMethodSymbol) ?? entryMethod;
         var entryFqn = entryMethod.ToDisplayString();
 
-        // Phase A: BFS in symbol space — collect symbols by FQN + edges as (fromFqn,toFqn,kind).
+        // Phase A: BFS in symbol space — collect symbols by FQN + edges as (fromFqn,toFqn,kind,backEdge).
         // `visited` is the single cycle-guard: a node is marked visited the moment it is first
         // discovered, before it is enqueued.  This means:
         //   (a) duplicate queue entries (diamond patterns) are impossible — once a node is in
         //       visited it can still receive incoming edges but will never be enqueued again.
         //   (b) true call-graph cycles (A→B→A) produce a back-edge in edgeTuples (which becomes
-        //       a Mermaid cycle arrow) but do not re-expand A.
+        //       a dashed Mermaid cycle arrow) but do not re-expand A.
+        _callersCache.Clear();
         var symbolByFqn = new Dictionary<string, IMethodSymbol>(StringComparer.Ordinal);
-        var edgeTuples = new List<(string from, string to, EdgeKind kind)>();
+        var edgeTuples = new List<(string from, string to, EdgeKind kind, bool isBackEdge)>();
         var visited = new HashSet<string>(StringComparer.Ordinal);
         var truncated = false;
 
@@ -81,23 +124,33 @@ public class TraceWalker : ITraceWalker
             var (cur, curDepth) = queue.Dequeue();
             var curFqn = cur.ToDisplayString();
 
+            // Total-node ceiling reached — stop expanding. Already-discovered nodes are
+            // kept; we just don't pull any more in.
+            if (symbolByFqn.Count >= MaxTotalNodes)
+            {
+                truncated = true;
+                continue;
+            }
+
             // Already past the depth limit — record the node but don't expand it.
             if (curDepth >= depth) continue;
 
             if (direction is TraceDirection.Callers or TraceDirection.Both)
             {
                 var added = 0;
-                var callers = await SymbolFinder.FindCallersAsync(cur, solution, ct);
+                var callers = await _callersCache.GetOrAddAsync(cur, solution, ct);
                 foreach (var caller in callers)
                 {
-                    if (caller.CallingSymbol is not IMethodSymbol m) continue;
+                    if (caller is not IMethodSymbol m) continue;
                     if (!IsTraceable(m)) continue;
                     if (added >= MaxBranchWidth) { truncated = true; break; }
                     added++;
 
                     var callerFqn = m.ToDisplayString();
-                    // Always record the edge (including back-edges from cycles).
-                    edgeTuples.Add((callerFqn, curFqn, EdgeKind.CalledBy));
+                    // Add the edge. If the target was already visited, this is a back-edge
+                    // (cycle) — flag it so the renderer can draw it dashed.
+                    var isBackEdge = visited.Contains(callerFqn);
+                    edgeTuples.Add((callerFqn, curFqn, EdgeKind.CalledBy, isBackEdge));
 
                     // Only enqueue if not yet visited — prevents cycles and diamond re-expansion.
                     if (visited.Add(callerFqn))
@@ -119,8 +172,8 @@ public class TraceWalker : ITraceWalker
                     added++;
 
                     var calleeFqn = callee.ToDisplayString();
-                    // Always record the edge (including back-edges from cycles).
-                    edgeTuples.Add((curFqn, calleeFqn, EdgeKind.Calls));
+                    var isBackEdge = visited.Contains(calleeFqn);
+                    edgeTuples.Add((curFqn, calleeFqn, EdgeKind.Calls, isBackEdge));
 
                     // Only enqueue if not yet visited — prevents cycles and diamond re-expansion.
                     if (visited.Add(calleeFqn))
@@ -168,13 +221,13 @@ public class TraceWalker : ITraceWalker
         // Phase C: rewrite edges with node ids, drop duplicates.
         var edges = new List<TraceEdge>();
         var seenEdge = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (fromFqn, toFqn, kind) in edgeTuples)
+        foreach (var (fromFqn, toFqn, kind, isBackEdge) in edgeTuples)
         {
             if (!nodeIdByFqn.TryGetValue(fromFqn, out var fromId)) continue;
             if (!nodeIdByFqn.TryGetValue(toFqn, out var toId)) continue;
             var key = $"{fromId}->{toId}:{kind}";
             if (!seenEdge.Add(key)) continue;
-            edges.Add(new TraceEdge(fromId, toId, kind));
+            edges.Add(new TraceEdge(fromId, toId, kind, isBackEdge));
         }
 
         _logger.LogInformation("Trace graph: entry={Entry} nodes={Nodes} edges={Edges} truncated={Truncated}",
@@ -183,33 +236,76 @@ public class TraceWalker : ITraceWalker
         return new TraceGraph(entryFqn, nodes, edges, truncated);
     }
 
-    private static async Task<ISymbol?> ResolveEntryPointAsync(
+    public async Task<List<EntryPointCandidate>> ResolveCandidatesAsync(
+        string workspaceId, TraceEntryPoint entryPoint, CancellationToken ct)
+    {
+        var solution = _workspace.GetRoslynSolution(workspaceId);
+        if (solution == null) return new();
+
+        var methods = await FindCandidateMethodsAsync(solution, entryPoint, ct);
+        return methods.Select(m =>
+        {
+            var loc = m.Locations.FirstOrDefault(l => l.IsInSource);
+            var line = loc?.GetLineSpan().StartLinePosition.Line + 1 ?? 0;
+            return new EntryPointCandidate(
+                Fqn: m.ToDisplayString(),
+                DisplayName: BuildDisplayName(m),
+                FilePath: loc?.SourceTree?.FilePath ?? "",
+                Line: line,
+                Signature: m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat));
+        }).ToList();
+    }
+
+    private static async Task<List<IMethodSymbol>> FindCandidateMethodsAsync(
         Solution solution, TraceEntryPoint ep, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(ep.MethodName)) return new();
+
+        var parts = ep.MethodName.Trim().Split('.');
+        var methodPart = parts[^1];
+        var typeHint = parts.Length > 1 ? parts[^2] : null;
+        var nsHint = parts.Length > 2 ? string.Join('.', parts[..^2]) : null;
+
+        var candidates = new List<IMethodSymbol>();
+        foreach (var project in solution.Projects)
+        {
+            ct.ThrowIfCancellationRequested();
+            var found = await SymbolFinder.FindDeclarationsAsync(
+                project, methodPart, ignoreCase: false,
+                filter: SymbolFilter.Member, cancellationToken: ct);
+            candidates.AddRange(found.OfType<IMethodSymbol>()
+                .Where(m => m.Locations.Any(l => l.IsInSource)));
+        }
+
+        if (typeHint is not null)
+            candidates = candidates.Where(m => m.ContainingType?.Name == typeHint).ToList();
+        if (nsHint is not null)
+            candidates = candidates
+                .Where(m => m.ContainingNamespace?.ToDisplayString().EndsWith(nsHint, StringComparison.Ordinal) ?? false)
+                .ToList();
+
+        // De-duplicate by FQN — same symbol can show up across multi-target projects.
+        return candidates
+            .GroupBy(m => m.ToDisplayString(), StringComparer.Ordinal)
+            .Select(g => g.First())
+            .ToList();
+    }
+
+    private static async Task<ISymbol?> ResolveEntryPointAsync(
+        Solution solution, TraceEntryPoint ep, CancellationToken ct, string? preferredFqn)
     {
         // Preferred path: method name like "Class.Method" or "Namespace.Class.Method"
         if (!string.IsNullOrWhiteSpace(ep.MethodName))
         {
-            var parts = ep.MethodName.Trim().Split('.');
-            var methodPart = parts[^1];
-            var typeHint = parts.Length > 1 ? parts[^2] : null;
-            var nsHint = parts.Length > 2 ? string.Join('.', parts[..^2]) : null;
+            var candidates = await FindCandidateMethodsAsync(solution, ep, ct);
 
-            var candidates = new List<IMethodSymbol>();
-            foreach (var project in solution.Projects)
+            // When the UI has already disambiguated, honor that choice exactly.
+            if (!string.IsNullOrWhiteSpace(preferredFqn))
             {
-                ct.ThrowIfCancellationRequested();
-                var found = await SymbolFinder.FindDeclarationsAsync(
-                    project, methodPart, ignoreCase: false,
-                    filter: SymbolFilter.Member, cancellationToken: ct);
-                candidates.AddRange(found.OfType<IMethodSymbol>());
+                var exact = candidates.FirstOrDefault(m =>
+                    string.Equals(m.ToDisplayString(), preferredFqn, StringComparison.Ordinal));
+                if (exact is not null) return exact;
             }
-
-            if (typeHint is not null)
-                candidates = candidates.Where(m => m.ContainingType?.Name == typeHint).ToList();
-            if (nsHint is not null)
-                candidates = candidates
-                    .Where(m => m.ContainingNamespace?.ToDisplayString().EndsWith(nsHint, StringComparison.Ordinal) ?? false)
-                    .ToList();
 
             return candidates.FirstOrDefault();
         }
@@ -389,9 +485,13 @@ public class TraceWalker : ITraceWalker
         // Edge declarations — direction-aware arrows.
         // CalledBy: caller -> target (the caller invokes the target).
         // Calls:    source  -> callee  (the source invokes the callee).
-        // Both render as `from --> to`; the semantics are baked into which fqn is from/to.
+        // Back-edges (cycles) render dashed (`-.->`) so they're visually distinct from
+        // ordinary forward edges in diamond-pattern call graphs.
         foreach (var edge in graph.Edges)
-            sb.AppendLine($"  {edge.FromId} --> {edge.ToId}");
+        {
+            var arrow = edge.IsBackEdge ? "-.->" : "-->";
+            sb.AppendLine($"  {edge.FromId} {arrow} {edge.ToId}");
+        }
 
         // Highlight the entry point so it's visually distinct.
         var entry = graph.Nodes.FirstOrDefault(n => n.SymbolFqn == graph.EntryPointSymbolFqn);

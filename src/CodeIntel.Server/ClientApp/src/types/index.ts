@@ -103,11 +103,20 @@ export interface TraceEntryPoint {
 }
 
 export interface TraceRequest {
-  workspaceId: string;
-  entryPoint:  TraceEntryPoint;
-  direction:   TraceDirection;
-  depth:       number;
-  traceId?:    string | null;
+  workspaceId:    string;
+  entryPoint:     TraceEntryPoint;
+  direction:      TraceDirection;
+  depth:          number;
+  traceId?:       string | null;
+  preferredFqn?:  string | null;
+}
+
+export interface EntryPointCandidate {
+  fqn:          string;
+  displayName:  string;
+  filePath:     string;
+  line:         number;
+  signature:    string;
 }
 
 export interface TraceNode {

@@ -1,4 +1,6 @@
-using System.Text.RegularExpressions;
+using Antlr4.Runtime;
+using Antlr4.Runtime.Tree;
+using CodeIntel.Server.Grammar;
 using CodeIntel.Server.Models;
 
 namespace CodeIntel.Server.Services;
@@ -9,40 +11,25 @@ public interface IPlSqlObjectParser
 }
 
 /// <summary>
-/// Heuristic extractor for PL/SQL object references. Strips comments + string literals,
-/// then runs anchored regex against DML keywords and package.proc invocation syntax.
-/// Not a full PL/SQL parser — false positives/negatives are accepted; the local LLM is
-/// the consumer and the briefing-officer architecture tolerates noise.
+/// ANTLR-backed PL/SQL object-reference extractor. Tokenization (strings,
+/// comments, quoted identifiers, schema-qualified names) is handled by the
+/// generated <see cref="PlSqlRefsLexer"/>; structural extraction is done by
+/// <see cref="ObjectRefVisitor"/> walking the parse tree produced by
+/// <see cref="PlSqlRefsParser"/>.
+///
+/// This replaces a regex-based predecessor that mis-classified references
+/// inside comments / string literals and tripped over multi-line statements.
+/// The grammar lives at <c>Grammar/PlSqlRefs.g4</c>; build-time codegen is
+/// handled by the <c>Antlr4BuildTasks</c> NuGet package.
 /// </summary>
 public class PlSqlObjectParser : IPlSqlObjectParser
 {
-    private const RegexOptions Opts = RegexOptions.Compiled | RegexOptions.IgnoreCase;
-
-    // PL/SQL identifier (optionally schema-qualified). $ # _ are valid in Oracle identifiers.
-    // Quoted identifiers "Like This" are not handled — rare in stored-proc bodies.
-    private const string IdPattern = @"(?:[A-Za-z][A-Za-z0-9_$#]*)";
-    private const string QualifiedPattern = @"(?:" + IdPattern + @"\.)?" + IdPattern;
-
-    // Table-position keywords. The trailing group captures the (possibly-qualified) name.
-    private static readonly Regex TableFrom    = new($@"\bFROM\s+({QualifiedPattern})", Opts);
-    private static readonly Regex TableJoin    = new($@"\bJOIN\s+({QualifiedPattern})", Opts);
-    private static readonly Regex TableInto    = new($@"\bINTO\s+({QualifiedPattern})", Opts);
-    private static readonly Regex TableUpdate  = new($@"\bUPDATE\s+({QualifiedPattern})", Opts);
-    private static readonly Regex TableDelete  = new($@"\bDELETE\s+(?:FROM\s+)?({QualifiedPattern})", Opts);
-    private static readonly Regex TableMerge   = new($@"\bMERGE\s+INTO\s+({QualifiedPattern})", Opts);
-    private static readonly Regex TableUsing   = new($@"\bUSING\s+({QualifiedPattern})", Opts);
-
-    // Routine invocations: explicit EXECUTE / CALL, or package.proc(...) pattern.
-    private static readonly Regex ExplicitCall = new($@"\b(?:EXEC(?:UTE)?|CALL)\s+({QualifiedPattern})", Opts);
-    private static readonly Regex QualifiedCall = new($@"\b({IdPattern})\.({IdPattern})\s*\(", Opts);
-
-    // Stop-words that should never be treated as object names if they slip through (PL/SQL keywords +
-    // common builtins). Lowercased; compared case-insensitively.
     private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
     {
-        // Keywords that can appear immediately after FROM/INTO/JOIN/UPDATE/DELETE in syntax we don't care about.
+        // Keywords / pseudo-tables that can appear in FROM / INTO / etc. but aren't
+        // real user objects we want to resolve.
         "dual", "sys", "table", "the", "lateral", "json_table", "xmltable",
-        // Common builtins that follow EXEC in scripts but aren't user objects.
+        // Common token after EXEC in scripts.
         "immediate",
     };
 
@@ -50,66 +37,115 @@ public class PlSqlObjectParser : IPlSqlObjectParser
     {
         if (string.IsNullOrWhiteSpace(source)) return ParsedObjectReferences.Empty;
 
-        var cleaned = StripCommentsAndStrings(source);
+        var input = new AntlrInputStream(source);
+        var lexer = new PlSqlRefsLexer(input);
+        lexer.RemoveErrorListeners();
+        var tokens = new CommonTokenStream(lexer);
+        var parser = new PlSqlRefsParser(tokens);
+        // PL/SQL we don't fully grammar-cover will produce error nodes; silence them.
+        parser.RemoveErrorListeners();
+        parser.ErrorHandler = new BailingErrorStrategy();
 
-        var tables   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var routines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var packages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        IParseTree tree;
+        try { tree = parser.script(); }
+        catch (Antlr4.Runtime.Misc.ParseCanceledException) { return ParsedObjectReferences.Empty; }
 
-        void AddTable(string raw)
-        {
-            var name = NormalizeName(raw);
-            if (name != null && !StopWords.Contains(name)) tables.Add(name);
-        }
-
-        void AddRoutine(string raw)
-        {
-            var name = NormalizeName(raw);
-            if (name != null && !StopWords.Contains(name)) routines.Add(name);
-        }
-
-        foreach (var rx in new[] { TableFrom, TableJoin, TableInto, TableUpdate, TableDelete, TableMerge, TableUsing })
-            foreach (Match m in rx.Matches(cleaned))
-                AddTable(m.Groups[1].Value);
-
-        foreach (Match m in ExplicitCall.Matches(cleaned))
-            AddRoutine(m.Groups[1].Value);
-
-        // package.proc(...) — capture both the package and the proc.
-        foreach (Match m in QualifiedCall.Matches(cleaned))
-        {
-            var pkg = m.Groups[1].Value;
-            var proc = m.Groups[2].Value;
-            if (!StopWords.Contains(pkg)) packages.Add(pkg);
-            if (!StopWords.Contains(proc)) routines.Add(proc);
-        }
+        var visitor = new ObjectRefVisitor(StopWords);
+        visitor.Visit(tree);
 
         return new ParsedObjectReferences(
-            Tables:   tables.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
-            Routines: routines.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
-            Packages: packages.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList()
+            Tables:   visitor.Tables  .OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
+            Routines: visitor.Routines.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList(),
+            Packages: visitor.Packages.OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList()
         );
     }
 
-    private static string? NormalizeName(string raw)
+    /// <summary>
+    /// Falls back to <see cref="DefaultErrorStrategy"/> on recovery rather than
+    /// throwing, because we want partial extraction even when the input contains
+    /// PL/SQL syntax we don't grammar-cover (DECLARE blocks, CREATE OR REPLACE
+    /// statements, etc.).
+    /// </summary>
+    private sealed class BailingErrorStrategy : DefaultErrorStrategy
     {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-        // Trim any trailing punctuation the regex may have grabbed.
-        raw = raw.Trim().TrimEnd(',', ';', ')', '(');
-        // Strip schema prefix: SCHEMA.NAME -> NAME.
-        var dot = raw.LastIndexOf('.');
-        if (dot >= 0 && dot < raw.Length - 1) raw = raw[(dot + 1)..];
-        return raw.Length > 0 ? raw : null;
+        public override void ReportError(Antlr4.Runtime.Parser recognizer, RecognitionException e) { /* swallow */ }
+        public override void Recover(Antlr4.Runtime.Parser recognizer, RecognitionException e)
+        {
+            // Skip one token and continue — default behavior, but without the noise.
+            recognizer.Consume();
+        }
     }
 
-    // PL/SQL line comments (-- ...), block comments (/* ... */), and single-quoted strings.
-    // Strings can contain '' as an escape; we collapse them to a placeholder rather than the
-    // literal content so reference-extraction doesn't pull names out of dynamic SQL strings
-    // (those are a future enhancement).
-    private static readonly Regex CommentsAndStrings = new(
-        @"(--[^\r\n]*)|(/\*[\s\S]*?\*/)|('(?:''|[^'])*')",
-        RegexOptions.Compiled);
+    private sealed class ObjectRefVisitor : PlSqlRefsBaseVisitor<object?>
+    {
+        public HashSet<string> Tables   { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> Routines { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> Packages { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    private static string StripCommentsAndStrings(string source) =>
-        CommentsAndStrings.Replace(source, m => new string(' ', m.Length));
+        private readonly HashSet<string> _stop;
+
+        public ObjectRefVisitor(HashSet<string> stop) => _stop = stop;
+
+        public override object? VisitFromRef(PlSqlRefsParser.FromRefContext c)   { AddTable(c.qualifiedName()); return null; }
+        public override object? VisitJoinRef(PlSqlRefsParser.JoinRefContext c)   { AddTable(c.qualifiedName()); return null; }
+        public override object? VisitIntoRef(PlSqlRefsParser.IntoRefContext c)   { AddTable(c.qualifiedName()); return null; }
+        public override object? VisitUpdateRef(PlSqlRefsParser.UpdateRefContext c) { AddTable(c.qualifiedName()); return null; }
+        public override object? VisitDeleteRef(PlSqlRefsParser.DeleteRefContext c) { AddTable(c.qualifiedName()); return null; }
+        public override object? VisitMergeRef(PlSqlRefsParser.MergeRefContext c)   { AddTable(c.qualifiedName()); return null; }
+        public override object? VisitUsingRef(PlSqlRefsParser.UsingRefContext c)   { AddTable(c.qualifiedName()); return null; }
+
+        public override object? VisitExecCall(PlSqlRefsParser.ExecCallContext c)
+        {
+            AddRoutine(c.qualifiedName());
+            return null;
+        }
+
+        public override object? VisitPkgProcCall(PlSqlRefsParser.PkgProcCallContext c)
+        {
+            // pkgProcCall: IDENT '.' IDENT '(' — both identifiers are direct children.
+            var idents = c.IDENT();
+            if (idents.Length >= 2)
+            {
+                var pkg  = Unquote(idents[0].GetText());
+                var proc = Unquote(idents[1].GetText());
+                if (!IsStop(pkg))  Packages.Add(pkg);
+                if (!IsStop(proc)) Routines.Add(proc);
+            }
+            return null;
+        }
+
+        private void AddTable(PlSqlRefsParser.QualifiedNameContext? ctx)
+        {
+            var name = ExtractTail(ctx);
+            if (name != null && !IsStop(name)) Tables.Add(name);
+        }
+
+        private void AddRoutine(PlSqlRefsParser.QualifiedNameContext? ctx)
+        {
+            var name = ExtractTail(ctx);
+            if (name != null && !IsStop(name)) Routines.Add(name);
+        }
+
+        // The unqualified tail of `schema.name` (or just `name`).
+        private static string? ExtractTail(PlSqlRefsParser.QualifiedNameContext? ctx)
+        {
+            if (ctx is null) return null;
+            // Each side is either IDENT or QUOTED_IDENT — they're alternatives in the same slot.
+            var idents = ctx.IDENT();
+            var quoted = ctx.QUOTED_IDENT();
+            var tokens = new List<IToken>();
+            foreach (var t in idents) tokens.Add(t.Symbol);
+            foreach (var t in quoted) tokens.Add(t.Symbol);
+            if (tokens.Count == 0) return null;
+            tokens.Sort((a, b) => a.StartIndex.CompareTo(b.StartIndex));
+            return Unquote(tokens[^1].Text);
+        }
+
+        private bool IsStop(string name) => _stop.Contains(name);
+
+        private static string Unquote(string text) =>
+            text.Length >= 2 && text[0] == '"' && text[^1] == '"'
+                ? text[1..^1].Replace("\"\"", "\"")
+                : text;
+    }
 }

@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using CodeIntel.Server.Models;
 
 namespace CodeIntel.Server.Services;
@@ -8,29 +7,29 @@ namespace CodeIntel.Server.Services;
 /// <summary>
 /// Stateful streaming parser. Feed tokens in as they arrive; emits findings incrementally.
 /// Also collects context requests for the agentic loop — these are read after the stream ends.
+///
+/// Implementation: single-pass scanner that only inspects the newly-appended chunk + a small
+/// tail window for partial-tag detection. Prior versions re-ran a regex on the full buffer
+/// every token, which was O(n²) over the stream.
 /// </summary>
 public class FindingStreamParser
 {
+    private const string FindingOpen   = "<finding>";
+    private const string FindingClose  = "</finding>";
+    private const string RequestOpen   = "<request_context";
+    private const string RequestClose  = "</request_context>";
+    private const string DoneMarker    = "<done />";
+
     private readonly StringBuilder _buffer = new();
     private readonly List<Finding> _findings = new();
     private readonly List<ContextRequest> _contextRequests = new();
     private readonly List<ParseFailure> _malformed = new();
 
-    private static readonly Regex FindingRegex = new(
-        @"<finding>(?<json>.*?)</finding>",
-        RegexOptions.Compiled | RegexOptions.Singleline);
-
-    private static readonly Regex FindingOpenRegex = new(
-        @"<finding>",
-        RegexOptions.Compiled);
-
-    private static readonly Regex FindingCloseRegex = new(
-        @"</finding>",
-        RegexOptions.Compiled);
-
-    private static readonly Regex ContextRequestRegex = new(
-        @"<request_context\s+type=""(?<type>[^""]+)"">(?<target>.*?)</request_context>",
-        RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    // Forward scan index: everything before this position has been consumed.
+    private int _scanPos;
+    // Count of unclosed <finding> opens we've seen (open - close, excluding completed pairs).
+    private int _openFindingCount;
+    private int _completedOpenCount;
 
     public IReadOnlyList<Finding> Findings => _findings;
     public IReadOnlyList<ContextRequest> ContextRequests => _contextRequests;
@@ -39,19 +38,10 @@ public class FindingStreamParser
     public bool IsDone { get; private set; }
 
     /// <summary>
-    /// Number of `&lt;finding&gt;` openings that never received a matching `&lt;/finding&gt;`
-    /// closing tag in the stream. These are silently lost — the orchestrator should log this.
+    /// Number of <c>&lt;finding&gt;</c> openings that never received a matching closing tag.
+    /// Computed incrementally as the stream is consumed.
     /// </summary>
-    public int IncompleteFindingCount
-    {
-        get
-        {
-            var text = _buffer.ToString();
-            var opens = FindingOpenRegex.Matches(text).Count;
-            var closes = FindingCloseRegex.Matches(text).Count;
-            return Math.Max(0, opens - closes);
-        }
-    }
+    public int IncompleteFindingCount => Math.Max(0, _openFindingCount - _completedOpenCount);
 
     public record ParseFailure(string Snippet, string Error);
 
@@ -61,41 +51,128 @@ public class FindingStreamParser
     /// </summary>
     public IEnumerable<Finding> Append(string chunk)
     {
+        if (string.IsNullOrEmpty(chunk)) return Array.Empty<Finding>();
+
         _buffer.Append(chunk);
-        var text = _buffer.ToString();
+        var emitted = new List<Finding>();
 
-        if (!IsDone && text.Contains("<done />", StringComparison.OrdinalIgnoreCase))
-            IsDone = true;
-
-        // emit new findings incrementally
-        var findingMatches = FindingRegex.Matches(text);
-        var newFindings = new List<Finding>();
-        for (int i = _findings.Count + _malformed.Count; i < findingMatches.Count; i++)
+        while (true)
         {
-            var json = findingMatches[i].Groups["json"].Value.Trim();
-            var (finding, error) = TryParseFinding(json);
-            if (finding != null)
+            // What's the nearest interesting marker from _scanPos forward?
+            var openF    = IndexOf(FindingOpen,   _scanPos);
+            var openR    = IndexOf(RequestOpen,   _scanPos);
+            var doneIdx  = IndexOf(DoneMarker,    _scanPos);
+
+            var next = MinNonNegative(openF, openR, doneIdx);
+            if (next < 0) break;
+
+            // <done /> always wins if it's the earliest marker — model is signaling
+            // completion and won't emit more tags.
+            if (next == doneIdx)
             {
-                _findings.Add(finding);
-                newFindings.Add(finding);
+                IsDone = true;
+                _scanPos = doneIdx + DoneMarker.Length;
+                continue;
             }
-            else
+
+            if (next == openF)
             {
-                _malformed.Add(new ParseFailure(Truncate(json, 200), error ?? "(unknown)"));
+                _openFindingCount++;
+                var bodyStart = openF + FindingOpen.Length;
+                var closeIdx = IndexOf(FindingClose, bodyStart);
+                if (closeIdx < 0)
+                {
+                    // Closing tag hasn't streamed in yet. Park the scanner just past
+                    // the opener so the next chunk can pick up where we left off.
+                    _scanPos = bodyStart;
+                    break;
+                }
+
+                _completedOpenCount++;
+                var json = Slice(bodyStart, closeIdx).Trim();
+                var (finding, error) = TryParseFinding(json);
+                if (finding != null)
+                {
+                    _findings.Add(finding);
+                    emitted.Add(finding);
+                }
+                else
+                {
+                    _malformed.Add(new ParseFailure(Truncate(json, 200), error ?? "(unknown)"));
+                }
+                _scanPos = closeIdx + FindingClose.Length;
+                continue;
+            }
+
+            // <request_context type="...">...</request_context>
+            if (next == openR)
+            {
+                var attrStart = openR + RequestOpen.Length;
+                var openTagEnd = IndexOf(">", attrStart);
+                if (openTagEnd < 0)
+                {
+                    _scanPos = openR;
+                    break;
+                }
+                var closeIdx = IndexOf(RequestClose, openTagEnd + 1);
+                if (closeIdx < 0)
+                {
+                    _scanPos = openR;
+                    break;
+                }
+                var attrs = Slice(attrStart, openTagEnd);
+                var target = Slice(openTagEnd + 1, closeIdx).Trim();
+                var typeStr = ExtractTypeAttribute(attrs);
+                _contextRequests.Add(new ContextRequest(ParseContextRequestType(typeStr), target));
+                _scanPos = closeIdx + RequestClose.Length;
+                continue;
             }
         }
 
-        // collect context requests (de-duplicated; read after stream ends)
-        var crMatches = ContextRequestRegex.Matches(text);
-        for (int i = _contextRequests.Count; i < crMatches.Count; i++)
-        {
-            var typeStr = crMatches[i].Groups["type"].Value.Trim();
-            var target = crMatches[i].Groups["target"].Value.Trim();
-            var requestType = ParseContextRequestType(typeStr);
-            _contextRequests.Add(new ContextRequest(requestType, target));
-        }
+        return emitted;
+    }
 
-        return newFindings;
+    private int IndexOf(string needle, int from)
+    {
+        if (from >= _buffer.Length) return -1;
+        // StringBuilder.ToString() over a small window — cheaper than materializing the
+        // whole buffer. For typical token chunks this stays in the low hundreds of bytes.
+        return _buffer.ToString().IndexOf(needle, from, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string Slice(int start, int endExclusive) =>
+        _buffer.ToString(start, endExclusive - start);
+
+    private static int MinNonNegative(params int[] values)
+    {
+        var min = -1;
+        foreach (var v in values)
+        {
+            if (v < 0) continue;
+            if (min < 0 || v < min) min = v;
+        }
+        return min;
+    }
+
+    private static string ExtractTypeAttribute(string attrs)
+    {
+        // attrs is the chunk between `<request_context` and `>` — e.g. ` type="file"`.
+        // Tolerate single or double quotes and surrounding whitespace.
+        var idx = attrs.IndexOf("type", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return "";
+        var eq = attrs.IndexOf('=', idx);
+        if (eq < 0) return "";
+        var quote = -1;
+        for (var i = eq + 1; i < attrs.Length; i++)
+        {
+            var c = attrs[i];
+            if (c == '"' || c == '\'') { quote = i; break; }
+            if (!char.IsWhiteSpace(c)) break;
+        }
+        if (quote < 0) return "";
+        var endQuote = attrs.IndexOf(attrs[quote], quote + 1);
+        if (endQuote < 0) return "";
+        return attrs.Substring(quote + 1, endQuote - quote - 1);
     }
 
     private static (Finding? finding, string? error) TryParseFinding(string json)

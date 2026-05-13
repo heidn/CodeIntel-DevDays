@@ -31,11 +31,11 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
     private readonly SemaphoreSlim _inferenceLock = new(1, 1);
 
     private LLamaWeights? _weights;
-    private LLamaContext? _context;
     private StatelessExecutor? _executor;
     private string _modelName   = "(not loaded)";
     private string _backendName = "cpu";
     private bool _isReady;
+    private bool _disposed;
 
     public bool IsReady      => _isReady;
     public string ModelName  => _modelName;
@@ -67,10 +67,11 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
         {
             _logger.LogInformation("Loading model from {Path}", modelPath);
 
-            var (parameters, backendName) = ResolveBackend(modelPath);
+            var (parameters, backendName, probedWeights) = ResolveBackend(modelPath);
 
-            _weights     = LLamaWeights.LoadFromFile(parameters);
-            _context     = _weights.CreateContext(parameters);
+            // Reuse the probe's loaded weights if the backend resolver already paid
+            // the cost of reading the 4.7 GB GGUF from disk; otherwise load now.
+            _weights     = probedWeights ?? LLamaWeights.LoadFromFile(parameters);
             _executor    = new StatelessExecutor(_weights, parameters);
             _modelName   = Path.GetFileNameWithoutExtension(modelPath);
             _backendName = backendName;
@@ -114,11 +115,12 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
     }
 
     /// <summary>
-    /// Determines the compute backend to use.
-    /// Auto/Vulkan: probes GPU load; falls back to CPU if Vulkan is unavailable.
-    /// Cpu: skips the GPU probe entirely.
+    /// Determines the compute backend to use and returns the parameters plus any
+    /// already-loaded weights from the probe. When the probe succeeds we hand the
+    /// loaded weights back to the caller — loading a 4.7 GB GGUF twice on startup
+    /// was the previous behaviour and a noticeable cold-start tax.
     /// </summary>
-    private (ModelParams, string) ResolveBackend(string modelPath)
+    private (ModelParams parameters, string backendName, LLamaWeights? probedWeights) ResolveBackend(string modelPath)
     {
         ModelParams Make(int gpuLayers) => new ModelParams(modelPath)
         {
@@ -130,27 +132,31 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
         if (_options.Backend == LlmBackend.Cpu)
         {
             _logger.LogInformation("Backend: cpu (explicit), GPU layers: 0");
-            return (Make(0), "cpu");
+            return (Make(0), "cpu", null);
         }
 
-        // Auto or Vulkan — attempt GPU, fall back to CPU on failure
+        // Auto or Vulkan — attempt GPU, fall back to CPU on failure.
         int gpuLayers = _options.GpuLayerCount > 0 ? _options.GpuLayerCount : 20;
+        LLamaWeights? probe = null;
         try
         {
             var p = Make(gpuLayers);
-            // Probe load: confirms the GPU path works before committing
-            using var probe = LLamaWeights.LoadFromFile(p);
+            // Probe load confirms the GPU path works. We keep the weights — the
+            // outer InitializeAsync will reuse them instead of paying the disk
+            // cost a second time.
+            probe = LLamaWeights.LoadFromFile(p);
             _logger.LogInformation("Backend: vulkan, GPU layers: {Layers}", gpuLayers);
-            return (p, "vulkan");
+            return (p, "vulkan", probe);
         }
         catch (Exception ex)
         {
+            probe?.Dispose();
             if (_options.Backend == LlmBackend.Vulkan)
                 throw new InvalidOperationException(
                     $"Vulkan backend explicitly requested but failed to load: {ex.Message}", ex);
 
             _logger.LogWarning("Vulkan unavailable ({Reason}), falling back to CPU", ex.Message);
-            return (Make(0), "cpu");
+            return (Make(0), "cpu", null);
         }
     }
 
@@ -183,7 +189,16 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
 
     public void Dispose()
     {
-        _context?.Dispose();
+        if (_disposed) return;
+        _disposed = true;
+
+        // Flip readiness first so any racing StreamAsync caller fails fast on the
+        // explicit check rather than NPE'ing on a freed native handle.
+        _isReady = false;
+
+        // StatelessExecutor holds no native handles of its own — it borrows from
+        // _weights, so dropping the reference is sufficient before disposing weights.
+        _executor = null;
         _weights?.Dispose();
         _inferenceLock.Dispose();
     }

@@ -4,13 +4,15 @@
 
 ## Status
 
-**Phase 1 + Phase 2 + Trace mode v1 + PL/SQL repo mode v1 shipping.** Save-to-repo, cancellation + watchdogs, call-trail trace, and PL/SQL stored-proc analysis are all wired up; trace v1 verified end-to-end on `CodeIntel.sln`, PL/SQL v1 needs UI smoke-test on a real repo.
+**Phase 3 hardening pass shipping** — most of the items in [docs/REVIEW-ENHANCEMENTS.md](docs/REVIEW-ENHANCEMENTS.md) are now closed. The tool has crossed from "demo on my laptop" toward "team tool on OpenShift": SQLite-backed history + ignored findings + result cache, per-IP rate limiting on run endpoints, LRU caps on workspaces and result rows, ANTLR-backed PL/SQL parser, secret scrubbing before save, cost/time estimator, findings diff + aggregator, content-keyed skill router, VS Code deep-link, trace cycle detection + overload disambiguation + total-node cap, `/healthz` + `/readyz` probes. See [docs/REVIEW-FEATURES.md](docs/REVIEW-FEATURES.md) for the reviewer-oriented walkthrough.
+
+**Phase 1 + Phase 2 + Trace mode v1 + PL/SQL repo mode v1 also shipping.** Save-to-repo, cancellation + watchdogs, call-trail trace, and PL/SQL stored-proc analysis are all wired up; trace v1 verified end-to-end on `CodeIntel.sln`, PL/SQL v1 still wants UI smoke-test on a real repo.
 
 The agentic analysis loop runs cleanly through to `<done/>` and produces structured findings on a real .sln. On-demand "Save to repo" writes the markdown report plus a preset-aware "Copilot Next Step" prompt into `{repoRoot}/docs/codeintel/` (configurable), with INDEX.md + `.codeintel-index.json` sidecar + one-time folder README. Cancellation is wired through a per-analysis CTS registry with idle-token (90s) and overall (600s) watchdogs; partial findings survive cancel.
 
-**Trace mode** (new): top-level **Analysis | Trace** toggle in `AnalysisPanel`. Type an entry-point method name (e.g. `OrderService.Submit`) + direction (Callers / Callees / Both) + depth (1–5), and the `TraceWalker` does a Roslyn BFS — `SymbolFinder.FindCallersAsync` for callers, semantic-model + `SyntaxWalker` on `InvocationExpressionSyntax`/`ObjectCreationExpressionSyntax` for callees. Each node gets a 1–2-sentence LLM synopsis (sequential, with full cancel/watchdog support and partial-save). Mermaid is generated programmatically (not LLM-emitted) and rendered inline via the `mermaid` npm package. Save to repo writes a trace report with a direction-aware Copilot brief (bug investigation / overview / change-impact). Smoke-tested: `ReportWriter.WriteTraceAsync` callees @ depth=1 → 8 nodes, 1m25s, all synopses accurate, MD + INDEX clean.
+**Trace mode**: top-level **Analysis | Trace** toggle in `AnalysisPanel`. Type an entry-point method name (e.g. `OrderService.Submit`) + direction (Callers / Callees / Both) + depth (1–5), and the `TraceWalker` does a Roslyn BFS — `SymbolFinder.FindCallersAsync` (memoized per run via `CallersCache`) for callers, semantic-model + `SyntaxWalker` on `InvocationExpressionSyntax`/`ObjectCreationExpressionSyntax` for callees. Total-node ceiling of 100 with `truncated=true`, dashed Mermaid back-edges for cycles, and an overload-disambiguation step via `POST /api/trace/candidates` when the entry-point name matches more than one method. Each node gets a 1–2-sentence LLM synopsis (sequential, with full cancel/watchdog support and partial-save). Mermaid is generated programmatically (not LLM-emitted) and rendered inline via the `mermaid` npm package. Save to repo writes a trace report with a direction-aware Copilot brief (bug investigation / overview / change-impact). Smoke-tested: `ReportWriter.WriteTraceAsync` callees @ depth=1 → 8 nodes, 1m25s, all synopses accurate, MD + INDEX clean.
 
-Tested A/B finding on the analysis side: the local 7B model produces noisy hedge-y findings — that's exactly what the Copilot Next Step handoff is for. The tightened `find-bugs.md` prompt and parser drop-counters reduce the worst FPs but the architecture deliberately leans on Copilot to verify. Trace-mode synopses are noticeably cleaner because the prompt is tighter and the scope per call is small.
+Tested A/B finding on the analysis side: the local 7B model produces noisy hedge-y findings — that's exactly what the Copilot Next Step handoff is for. The tightened `find-bugs.md` prompt, the `FindingsAggregator` collapse step, the parser drop-counters, the `SecretScrubber` pre-write pass, and the per-workspace ignored-findings store reduce the worst FPs but the architecture deliberately leans on Copilot to verify. Trace-mode synopses are noticeably cleaner because the prompt is tighter and the scope per call is small.
 
 Origin: dev days project, intended to grow into a team tool deployed on internal OpenShift.
 
@@ -18,7 +20,7 @@ Origin: dev days project, intended to grow into a team tool deployed on internal
 
 ## Architecture (one-paragraph)
 
-ASP.NET Core (.NET 10) hosts both the API and the React 19 SPA. The .NET server runs a GGUF model in-process via LLamaSharp. A request to `/api/analysis/run` returns immediately with an `analysisId`; the `InvestigationOrchestrator` runs an agentic loop (up to `MaxAgenticIterations`, default 3): it builds context, assembles a Qwen-formatted ChatML prompt from an embedded MD template, streams tokens through `ILlmService.StreamAsync`, and the `FindingStreamParser` reads both `<finding>{...}</finding>` and `<request_context>...</request_context>` blocks out of the stream. When the LLM requests more context, `ContextRequestHandler` fulfills it via Roslyn (file, class, method, callers, callees, search); findings and raw tokens are pushed to the client over SignalR. The orchestrator combines three `CancellationTokenSource`s: a user-cancel registered in `IAnalysisCancellationRegistry`, an idle-token watchdog (reset on each token), and an overall hard ceiling. Results cache in-memory by GUID; `/api/reports/{id}/download` returns a download, and `/api/reports/{id}/save` (new) writes the markdown into `{loadedRepoRoot}/{Analysis:ReportOutputPath}` (default `docs/codeintel/`) with INDEX.md + JSON sidecar. The MD report ends with a preset-aware "Copilot Next Step" section the user can reference in Copilot Chat via `#file:` syntax. A non-agentic `AnalysisOrchestrator` also exists as a fallback but is not wired in DI.
+ASP.NET Core (.NET 10) hosts both the API and the React 19 SPA. The .NET server runs a GGUF model in-process via LLamaSharp (singleton, `SemaphoreSlim(1,1)`-serialized, SHA-256 integrity-checked, Vulkan→CPU auto-fallback that reuses the probe-loaded weights to avoid a 4.7 GB double-read). A request to `/api/analysis/run` (rate-limited per IP to `Analysis:RateLimitRunsPerMinute`, default 5/min) returns immediately with an `analysisId`; the `InvestigationOrchestrator` first tries `IResultCache` for a hit on `{presetKey, modelName, file-content sha256}` and short-circuits if present. Otherwise it runs an agentic loop (up to `MaxAgenticIterations`, default 3): it builds context, asks `ISkillRouter` to attach a content-keyed prompt addendum (concurrency / raw-SQL / http-client / auth / PL/SQL cursors), assembles a Qwen-formatted ChatML prompt from an embedded MD template, streams tokens through `ILlmService.StreamAsync`, and the `FindingStreamParser` (now a single-pass O(n) scanner) reads both `<finding>{...}</finding>` and `<request_context>...</request_context>` blocks out of the stream. When the LLM requests more context, `ContextRequestHandler` fulfills it via Roslyn — methods now emit the symbol's full syntax via `DeclaringSyntaxReferences` rather than counting lines. Findings and raw tokens are pushed to the client over SignalR. The orchestrator combines three `CancellationTokenSource`s: a user-cancel registered in `IAnalysisCancellationRegistry`, an idle-token watchdog (reset on each token), and an overall hard ceiling. After the loop, `FindingsAggregator.Collapse` merges near-duplicate findings the 7B model often re-states across iterations. Results persist to SQLite via `SqliteAnalysisResultStore` (`data/codeintel.db`, WAL-mode, LRU-pruned to `MaxPersistedResults=200`); `/api/reports/{id}/download` returns a download and `/api/reports/{id}/save` writes the markdown into `{loadedRepoRoot}/{Analysis:ReportOutputPath}` (default `docs/codeintel/`) after a `SecretScrubber` pass and a `PathSafety.IsInside` containment check. INDEX.md + JSON sidecar are maintained; the MD report ends with a preset-aware "Copilot Next Step" section the user can reference in Copilot Chat via `#file:` syntax. The Roslyn `WorkspaceService` itself is LRU-capped at `MaxLoadedWorkspaces=3` to bound MSBuildWorkspace memory. `/healthz` (liveness) and `/readyz` (LLM + SQLite readiness) live outside `/api` for OpenShift probes.
 
 ---
 
@@ -46,45 +48,64 @@ ASP.NET Core (.NET 10) hosts both the API and the React 19 SPA. The .NET server 
 CodeIntel/
 ├── CodeIntel.sln
 ├── CLAUDE.md                            ← you are here
+├── docs/
+│   ├── REVIEW-ENHANCEMENTS.md           ← reviewer-noted flaws + suggested enhancements (most now ✅)
+│   └── REVIEW-FEATURES.md               ← reviewer-oriented walkthrough of every shipping feature
 ├── models/                              ← gitignored GGUF files
 │   └── qwen2.5-coder-7b-instruct-q4_k_m.gguf
+├── data/                                ← gitignored SQLite database lives here (codeintel.db)
 ├── test-data/sql/                       ← small PL/SQL fixture for manual smoke-testing
 ├── tests/CodeIntel.Server.Tests/        ← xunit 2.9 test project — parser/resolver/builder unit + integration tests
 └── src/CodeIntel.Server/
     ├── CodeIntel.Server.csproj
-    ├── Program.cs                       ← DI, SignalR, SPA hosting, eager LLM init
+    ├── Program.cs                       ← DI, SignalR, SPA hosting, eager LLM init, rate limiter
     ├── appsettings.json
     ├── Controllers/
+    │   ├── HealthController.cs          ← /healthz (liveness), /readyz (LLM + SQLite readiness) outside /api
     │   ├── WorkspaceController.cs       ← POST /api/workspace/load, GET file, GET definition
-    │   ├── AnalysisController.cs        ← presets, status, run, recent, cancel
-    │   ├── ReportsController.cs         ← analysis MD generation, download, POST save
-    │   └── TraceController.cs           ← POST /api/trace/run, GET {id}, POST save (cancel reuses analysis endpoint)
+    │   ├── AnalysisController.cs        ← presets, status, run (rate-limited), recent, cancel, estimate, diff
+    │   ├── IgnoredFindingsController.cs ← GET/POST/DELETE /api/ignored-findings — per-workspace FP suppression
+    │   ├── ReportsController.cs         ← analysis MD generation, download, POST save (returns redaction counts)
+    │   └── TraceController.cs           ← POST /api/trace/run (rate-limited), candidates (overload disambig), save
+    ├── Grammar/
+    │   └── PlSqlRefs.g4                 ← ANTLR grammar; codegen via Antlr4BuildTasks NuGet at build time
+    ├── Data/
+    │   └── CodeIntelDb.cs               ← SQLite connection factory; creates analyses/traces/ignored/cache tables (WAL)
     ├── Hubs/
     │   └── AnalysisHub.cs               ← single "AnalysisEvent" channel (analysis + trace events)
     ├── Services/
-    │   ├── RoslynWorkspaceService.cs    ← MSBuildLocator + MSBuildWorkspace
-    │   ├── LlamaSharpService.cs         ← singleton, semaphore-serialized inference
-    │   ├── ContextBuilder.cs            ← raw-text bundling with token budget
+    │   ├── RoslynWorkspaceService.cs    ← MSBuildLocator + MSBuildWorkspace, LRU-capped at MaxLoadedWorkspaces=3
+    │   ├── LlamaSharpService.cs         ← singleton, semaphore-serialized; reuses Vulkan-probe weights to avoid double load
+    │   ├── ContextBuilder.cs            ← raw-text bundling with token budget; PL/SQL dep attachment
     │   ├── PromptTemplateService.cs     ← loads embedded MD prompts, ChatML format
-    │   ├── FindingStreamParser.cs       ← parses <finding> + <request_context>, tracks malformed/incomplete drops
-    │   ├── AnalysisOrchestrator.cs      ← one-shot pipeline (not active in DI)
-    │   ├── InvestigationOrchestrator.cs ← agentic loop + CT/watchdogs (ACTIVE)
+    │   ├── FindingStreamParser.cs       ← O(n) single-pass scanner for <finding> + <request_context>; tracks drops
+    │   ├── InvestigationOrchestrator.cs ← agentic loop + CT/watchdogs + cache lookup + skill router + aggregator (ACTIVE)
     │   ├── AnalysisCancellationRegistry.cs ← per-analysis CTS lookup; reused by trace too
     │   ├── ContextRequestHandler.cs     ← fulfills LLM context requests via Roslyn (or PL/SQL resolver for OracleObject)
-    │   ├── PlSqlObjectParser.cs         ← regex-based extractor of table/proc/package refs from PL/SQL text (comment + string aware)
-    │   ├── PlSqlRepoResolver.cs         ← maps a PL/SQL object name → file in workspace (filename match + CREATE-OR-REPLACE DDL grep)
-    │   ├── TraceWalker.cs               ← Roslyn BFS for callers (FindCallersAsync) + callees (SemanticModel + SyntaxWalker), programmatic Mermaid
+    │   ├── PlSqlObjectParser.cs         ← ANTLR-backed extractor (replaces regex predecessor)
+    │   ├── PlSqlRepoResolver.cs         ← maps a PL/SQL object name → file in workspace (filename + CREATE-OR-REPLACE grep)
+    │   ├── TraceWalker.cs               ← Roslyn BFS, memoized FindCallersAsync, dashed back-edges, MaxTotalNodes=100
     │   ├── TraceOrchestrator.cs         ← graph walk → per-node LLM synopsis → save; partial-save on cancel
-    │   ├── TraceResultStore.cs          ← in-memory cache for TraceResults (separate from analysis store)
-    │   ├── ReportGenerator.cs           ← MD output: GenerateMarkdown(AnalysisResult) + GenerateTraceMarkdown(TraceResult), preset-aware Copilot briefs
-    │   ├── ReportWriter.cs              ← writes MD into target repo + unified INDEX (Kind: "analysis"|"trace") + JSON sidecar
-    │   └── AnalysisResultStore.cs       ← in-memory cache for AnalysisResults
+    │   ├── TraceResultStore.cs          ← SQLite-backed cache for TraceResults
+    │   ├── ReportGenerator.cs           ← MD output: GenerateMarkdown(AnalysisResult) + GenerateTraceMarkdown(TraceResult)
+    │   ├── ReportWriter.cs              ← writes MD into target repo, runs SecretScrubber, PathSafety-checked
+    │   ├── AnalysisResultStore.cs       ← SqliteAnalysisResultStore (LRU pruned to MaxPersistedResults)
+    │   ├── AnalysisEstimator.cs         ← POST /api/analysis/estimate — token + seconds projection from recent runs
+    │   ├── ContentHasher.cs             ← SHA-256 over file set + cache-key construction (F2)
+    │   ├── ResultCache.cs               ← short-circuits a run when {preset, model, content-hash} has been seen
+    │   ├── FindingsAggregator.cs        ← collapses near-dupes across iterations on (severity, file, title)
+    │   ├── FindingsDiff.cs              ← Added/Resolved/Persisted between two analyses for /diff endpoint
+    │   ├── IgnoredFindingsStore.cs      ← SQLite-backed FP signature ignore-list (per workspace root)
+    │   ├── PathSafety.cs                ← Path.GetFullPath + separator-aware containment check
+    │   ├── SecretScrubber.cs            ← regex pass for AWS/GitHub PAT/JWT/PEM/bearer secrets before saving MD
+    │   └── SkillRouter.cs               ← content-keyed prompt addenda (concurrency/raw-sql/http-client/auth/plsql-cursor)
     ├── Models/
-    │   ├── AnalysisModels.cs            ← Request, Result, Finding, enums (incl. ContextRequestType.OracleObject)
+    │   ├── AnalysisModels.cs            ← Request, Result (incl. ContentHash), Finding, enums (incl. OracleObject)
     │   ├── AnalysisEvents.cs            ← SignalR event factory
-    │   ├── WorkspaceModels.cs           ← Workspace, ProjectNode, FileNode, CodeContext (FileContext.IsResolvedDependency flag)
+    │   ├── WorkspaceModels.cs           ← Workspace (split into RootFolder + EntryFile), ProjectNode, FileNode, CodeContext
+    │   ├── TraceModels.cs               ← TraceRequest (incl. PreferredFqn), TraceEdge (IsBackEdge), EntryPointCandidate
     │   ├── PlSqlModels.cs               ← ParsedObjectReferences, PlSqlResolution, PlSqlObjectKind
-    │   └── Options.cs                   ← LlmOptions, AnalysisOptions
+    │   └── Options.cs                   ← LlmOptions, AnalysisOptions (cache/LRU/rate-limit tunables), DataOptions
     ├── Prompts/                         ← embedded MD resources
     │   ├── find-dead-code.md
     │   ├── find-bugs.md
@@ -102,17 +123,21 @@ CodeIntel/
             ├── main.tsx
             ├── App.tsx                  ← top shell + SignalR wiring
             ├── theme/index.ts           ← dark dev-tool MUI theme
-            ├── api/                     ← client, workspace, analysis, signalr
+            ├── api/                     ← client, workspace, analysis (+ estimateRun), trace, signalr
             ├── stores/                  ← workspaceStore, analysisStore
             ├── types/index.ts           ← shared API contracts
+            ├── utils/
+            │   └── openInVsCode.ts      ← vscode:// deep-link helper for finding/node "open in editor" buttons
             └── components/
                 ├── StatusDot.tsx
                 ├── SolutionPanel.tsx        ← left sidebar: load + tree
                 ├── FileTree.tsx             ← SimpleTreeView with checkboxes
                 ├── FolderPickerDialog.tsx   ← modal filesystem browser for .sln path
                 ├── AnalysisPanel.tsx        ← center column + tab bar (Analysis + file previews)
-                ├── PromptSelector.tsx       ← preset cards + free text + run
-                ├── ResultsView.tsx          ← streaming pane + findings cards
+                ├── PromptSelector.tsx       ← preset cards + free text + run + estimate chip
+                ├── ResultsView.tsx          ← streaming pane + findings cards + ignore button + open-in-VS-Code
+                ├── TracePanel.tsx           ← trace entry-point input + overload candidate picker
+                ├── TraceResultsView.tsx     ← Mermaid render + node synopsis cards + idle/elapsed chips
                 ├── CodeAnnotationView.tsx   ← code with inline finding highlights
                 └── FilePreviewPanel.tsx     ← readonly code display with syntax highlighting
 ```
@@ -126,12 +151,19 @@ CodeIntel/
 - **Inference serialized by `SemaphoreSlim(1,1)`** — LLamaSharp contexts are not thread-safe. For dev days this is fine; OpenShift scales horizontally with multiple pods.
 - **SignalR with single event channel** — all analysis events flow through `OnAsync("AnalysisEvent", ...)` with a `type` discriminator. Client switches on it. Avoids a proliferation of named events.
 - **`<finding>` tag wrapping** — chosen over raw JSON-per-line because it's robust against the LLM prepending prose, easier to parse with regex, and degrades gracefully if the model gets confused mid-token.
-- **Raw file text for initial context; Roslyn for follow-up requests** — initial context is assembled from raw file text. When the agentic loop requests a class/method/callers/callees, `ContextRequestHandler` fulfills those via Roslyn symbol resolution. Upgrade initial context assembly to Roslyn extraction if token budget becomes the bottleneck.
-- **In-memory result store** — sessions don't persist. DB persistence is a future phase.
-- **No auth for MVP** — explicit choice. Add Windows Auth via IIS passthrough when deploying internally.
+- **Raw file text for initial context; Roslyn for follow-up requests** — initial context is assembled from raw file text. When the agentic loop requests a class/method/callers/callees, `ContextRequestHandler` fulfills those via Roslyn symbol resolution; methods now emit `DeclaringSyntaxReferences[0].GetSyntax().ToFullString()` rather than a line-counted approximation. Upgrade initial context assembly to Roslyn extraction if token budget becomes the bottleneck.
+- **SQLite over Postgres for persistence** — `Microsoft.Data.Sqlite` with WAL mode, schema created on first open. One file (`data/codeintel.db`), zero ops. Tables: `analyses`, `traces`, `ignored_findings`, `result_cache`. On OpenShift, mount the data directory as a `PersistentVolumeClaim`.
+- **Result cache keyed on file content, not file mtime** — `{presetKey, modelName, sha256-of-files}` short-circuits a repeat run. Free-text mode never caches; TTL defaulted to 7 days; eviction lazy on lookup.
+- **Findings deduped post-hoc, not during streaming** — `FindingsAggregator.Collapse` merges by `(severity, file, lowercased title)` after the agentic loop ends. Picked over inline dedup so cross-iteration duplicates (the common case) get caught without complicating the parser.
+- **Secret scrubbing at write boundary, not at parse** — `SecretScrubber.Scrub` runs in `ReportWriter` right before `File.WriteAllTextAsync`. Per-pattern hit counts are returned to the UI and logged. Doing it later means even paste-as-context user input can be caught.
+- **PathSafety helper** — `Path.GetFullPath` + separator-aware containment. Replaces the prior `StartsWith(root)` check that accepted `repofoo` against `repo`.
+- **ANTLR over regex for PL/SQL** — the regex predecessor mishandled comments/strings/multi-line statements. The grammar at [Grammar/PlSqlRefs.g4](src/CodeIntel.Server/Grammar/PlSqlRefs.g4) is intentionally narrow — only object references, not full PL/SQL — so codegen is fast and the visitor stays small.
+- **Skill router is content-keyed, not preset-keyed** — `SkillRouter` adds prompt addenda when regex hits fire in the context. Stronger than picking a skill from the preset because real files often mix concerns (e.g. an HTTP controller that also calls a DbContext).
+- **No auth for MVP, rate limiting today** — explicit choice. The rate limiter (`Analysis:RateLimitRunsPerMinute`, default 5/min per IP) buys back the OOM-risk that no-auth opened up. Windows Auth via IIS passthrough still needed before the OpenShift cutover.
 - **Save reports into the loaded repo** (not auto-download) — Copilot Chat's `#file:` syntax wants the file in the workspace. The MD lives at `docs/codeintel/{date}-{preset}-{shortId}.md` by default, configurable per save. Each report ends with a preset-aware prompt the user can paste into Copilot.
 - **Local model = briefing officer, Copilot = analyst** — a 7B Qwen produces noisy findings. The architecture deliberately offloads verification to Copilot via the embedded "Copilot Next Step" prompt. Don't try to make the local model good; make it good enough that Copilot's verification round is fast.
 - **Cancellation via linked CTS triad** — user cancel (registry), idle-token watchdog (reset per token), overall hard ceiling. All three feed a linked CTS; the catch block inspects which fired to emit a specific reason. Partial findings are still saved.
+- **Trace overload disambiguation in the UI, not the server** — `POST /api/trace/candidates` returns all matching methods; the UI picks one and passes `preferredFqn` back to `/run`. Server-side first-match-wins was producing confusing behavior on overloads.
 
 ---
 
@@ -188,6 +220,10 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 4. **SignalR + Vite proxy** — needs `ws: true` in the proxy config for WebSocket upgrade. Already set.
 5. **First inference is slow** — CPU model warmup takes 30-60s. Don't conclude it's broken before letting it complete one cycle.
 6. **Embedded prompt resources** — `.md` files in `Prompts/` are embedded via `<EmbeddedResource>`. If you add new presets, update both the MD file and the `_presets` list in `PromptTemplateService.cs`.
+7. **ANTLR codegen at build time** — `Antlr4BuildTasks` generates lexer/parser/visitor from [Grammar/PlSqlRefs.g4](src/CodeIntel.Server/Grammar/PlSqlRefs.g4) on every build. If `PlSqlRefsLexer`/`PlSqlRefsParser` show as missing, run `dotnet build` once to regenerate the obj/ output.
+8. **SQLite path resolution** — `Data:DatabasePath` is resolved relative to `ContentRootPath`, not CWD. Running tests from elsewhere will create a fresh DB in that directory; tests use a tempfile to avoid cross-contamination.
+9. **Rate limiter is per IP, not per user** — on shared infra (NAT, internal proxy, OpenShift Service mesh) one user can starve everyone behind the same source IP. Raise `Analysis:RateLimitRunsPerMinute` or partition on a header when auth lands.
+10. **Result cache TTL is per-row, not per-content** — editing `appsettings.json` to lower `ResultCacheTtlHours` does **not** evict existing rows; they're only filtered on lookup. Delete `data/codeintel.db` (or the `result_cache` table) for an immediate flush.
 
 ---
 
@@ -241,24 +277,51 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 - Partial findings/synopses preserved on cancel — Save to repo still works
 - UI: Cancel button while running, live elapsed seconds, idle warn chip (≥30s), distinct cancelled-state styling
 
+**Phase 3 hardening pass** (driven by [docs/REVIEW-ENHANCEMENTS.md](docs/REVIEW-ENHANCEMENTS.md))
+- **Persistence (D2)** — `CodeIntelDb` (SQLite, WAL, schema-on-first-open) backs `SqliteAnalysisResultStore`, `SqliteTraceResultStore`, `IgnoredFindingsStore`, and `ResultCache`. Default path `data/codeintel.db` (configurable via `Data:DatabasePath`). LRU pruning to `MaxPersistedResults=200` on every save.
+- **Workspace LRU cap (A4)** — `MaxLoadedWorkspaces=3` evicts and disposes the oldest `MSBuildWorkspace` so big solutions don't accumulate in memory.
+- **Result cache (F2)** — `ResultCache` short-circuits a repeat run when `{presetKey, modelName, sha256(files)}` is unchanged within `ResultCacheTtlHours` (default 168h). Free-text mode never caches. Cache hit surfaces as an `AnalysisEvent` with `status: "Cache hit — reusing result from HH:MM (N findings)"`.
+- **Findings diff (F1)** — `GET /api/analysis/{id}/diff/{previousId}` returns `{added, resolved, persisted}` keyed by `(severity, file, lowercased title)`.
+- **Findings aggregator (F8)** — post-loop collapse of near-duplicate findings the 7B model often re-states across iterations.
+- **Ignored findings (D1)** — `POST /api/ignored-findings` records a SHA-256 signature against the workspace root; `GET` lists, `DELETE /{signature}` removes. UI surfaces ignore counts and filters out matches on subsequent runs.
+- **Skill router (F10)** — `SkillRouter` contributes a content-keyed prompt addendum when any of `concurrency / raw-sql / http-client / auth / plsql-cursor` patterns match the assembled context. Active skills are emitted as a `status` event (`"Skills active: concurrency, http-client"`).
+- **Run estimator (F14)** — `POST /api/analysis/estimate` returns `{ estimatedTokens, estimatedSeconds, sampleSize, explanation }` based on the median seconds-per-token across recent runs, with a coarse fallback when history is short.
+- **Secret scrubbing (C4)** — `SecretScrubber` runs in `ReportWriter` before write; redacts AWS keys, GitHub PATs, JWTs, PEM blocks, bearer tokens, Slack tokens, `key=value` patterns. Hit counts surface in the save response so the UI can warn.
+- **PathSafety (A1)** — `Path.GetFullPath` + separator-aware containment check; used by `ReportWriter` (both analysis and trace writes) and `RoslynWorkspaceService.ReadFileAsync`.
+- **Rate limiting (C2)** — `Microsoft.AspNetCore.RateLimiting` fixed-window limiter at `Analysis:RateLimitRunsPerMinute=5/min` per IP on `POST /api/analysis/run` and `POST /api/trace/run`. Rejected requests get a structured 429 body.
+- **Health probes (F11 part 1)** — `GET /healthz` (always 200) for liveness; `GET /readyz` (LLM + SQLite) for OpenShift readiness gating. Both live outside `/api`.
+- **VS Code deep-link (D3)** — `openInVsCode(absolutePath, line, column)` builds a `vscode://file/...` URL; wired into finding cards (analysis) and node cards (trace).
+- **ANTLR PL/SQL parser (B2)** — `Grammar/PlSqlRefs.g4` + `Antlr4BuildTasks` codegen replaces the regex predecessor. Handles quoted identifiers, multi-line statements, and comments/strings correctly.
+- **Trace cycle rendering (A11)** — `TraceEdge.IsBackEdge` flag drives a dashed `-.->` arrow in Mermaid so cycles are visually distinguishable.
+- **Trace overload disambiguation (A12)** — `POST /api/trace/candidates` returns all matching `IMethodSymbol` candidates; UI picks one; `TraceRequest.PreferredFqn` round-trips the choice exactly.
+- **Trace total-node cap (D5)** — `MaxTotalNodes=100` ceiling protects against god-class entry points; hit sets `truncated=true` without dropping already-discovered nodes.
+- **Callers cache (A9)** — `TraceWalker.CallersCache` memoizes `FindCallersAsync` per FQN within a single run, cutting the dominant cost on deep BFSs.
+- **Method snippet via Roslyn syntax (A7)** — `ContextRequestHandler.FulfillMethodAsync` now emits `DeclaringSyntaxReferences[0].GetSyntax().ToFullString()` instead of a line-counted approximation.
+- **Streaming parser O(n) (A8)** — `FindingStreamParser` is a single-pass scanner over newly-appended chunks plus a tail window; no more whole-buffer regex scan per token.
+- **Vulkan probe reuse (A5)** — `LlamaSharpService.ResolveBackend` now returns the probe-loaded weights so initialization doesn't read the 4.7 GB GGUF twice.
+- **Workspace model split (B4)** — `Workspace.RootFolder` (always a dir) + `Workspace.EntryFile` (nullable) replace the file-vs-folder ambiguity of `ProjectPath`; all consumers updated.
+- **Dead AnalysisOrchestrator removed (B3)** — `InvestigationOrchestrator` is the sole implementation.
+
 **Other**
 - Dark dev-tool aesthetic (JetBrains Mono + Inter Tight)
-- In-memory result history (`AnalysisResultStore`, `TraceResultStore`)
 - Mermaid via `mermaid` npm package (dark theme, JetBrains Mono labels, htmlLabels)
 
 ### ❌ Deferred (next sessions)
 
-- **Multi-language abstraction** — LSP client + tree-sitter for non-C# repos (TypeScript first). Roslyn becomes "the C# LSP backend," not a special case. Trace mode is C#-only today via Roslyn; LSP would unlock it for TS/Python/etc.
+- **Auth (C1)** — Windows Auth via IIS passthrough on the internal network. The single most important blocker before OpenShift deployment; the rate limiter buys back some of the OOM-risk but `WorkspaceController.Browse` still leaks the host filesystem to any unauthenticated caller.
+- **Configurable CORS origins (B5)** — `Program.cs` still hardcodes `5173/5174`. Move to `Cors:AllowedOrigins` in `appsettings.json`.
+- **Multi-language abstraction (B1)** — LSP client + tree-sitter for non-C# repos (TypeScript first). Roslyn becomes "the C# LSP backend," not a special case. Trace mode is C#-only today via Roslyn; LSP would unlock it for TS/Python/etc.
 - **Live Oracle introspection (PL/SQL v2)** — `Oracle.ManagedDataAccess.Core` + connection string + queries against `ALL_TABLES` / `ALL_TAB_COLUMNS` / `USER_SOURCE` / `ALL_PROCEDURES` to fetch schemas and stored-proc bodies from a live DB when the repo doesn't have the DDL committed. Also unlocks cross-workspace augmentation (a C# workspace's `DbAccess` trace nodes pulling schema from a sibling Oracle connection). v1 (repo-only) is shipping.
 - **Whole-repo dead-code detection** — tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch).
 - **Business documentation mode** — walk top-level entry points (controllers, handlers), trace flows, produce a feature catalog. Builds on the existing trace-mode pipeline.
-- **Skills system** — folder of `SKILL.md` files (csharp-bug-hunting, stored-proc-analysis, etc.) routed into prompts by mode + keyword.
+- **File-backed skills (extension of F10)** — `SkillRouter` ships content-keyed addenda hard-coded today; the planned next step is a folder of `SKILL.md` files (csharp-bug-hunting, stored-proc-analysis, etc.) routed by the same predicates.
 - **Roslyn-extracted initial context** — currently raw file text for the first iteration. Upgrade to method-level extraction when context budget gets tight.
-- **Optional finding-validation pass** — config flag to run a second LLM pass that critiques iter-1 findings and drops the ones it can't defend. Doubles run time but kills residual FPs.
-- **Trace v1.5 polish** — cycle detection in `TraceWalker` (currently relies on per-node fan-out cap + visited-set dedup), branch limits per direction, batched synopsis (single LLM call for several small nodes). (DB/HTTP node classification has shipped — see above.)
-- **OpenShift deployment** — Dockerfile, persistent volume for model, ConfigMap for `appsettings`. The single-project layout was designed for this; never done.
-- **Auth** — Windows Auth via IIS passthrough on the internal network.
-- **Persistence** — DB tables for analysis history, saved reports, prompt template versions.
+- **Optional finding-validation pass (F4 "second opinion")** — config flag to run a second LLM pass that critiques iter-1 findings and drops the ones it can't defend. Doubles run time but kills residual FPs.
+- **Trace v1.5 polish** — batched synopsis (single LLM call for several small nodes), per-direction branch limits. (Cycle detection + total-node cap + overload disambig + callers cache have all shipped — see above.)
+- **OpenShift deployment** — Dockerfile, persistent volumes for model + SQLite, ConfigMap for `appsettings`. The single-project layout was designed for this; never done.
+- **Headless CLI (F5)** + **VS Code extension (F6)** + **Watch mode (F7)** — all unblocked by the SQLite persistence + estimator + diff endpoints that just landed, but not implemented yet.
+- **Prometheus `/metrics` (F11 part 2)** — `/healthz` + `/readyz` shipped; queue depth + duration histograms still TODO.
+- **Notifications (F12) + shared prompt library (F13) + "Explain this commit" (F15)** — see [docs/REVIEW-ENHANCEMENTS.md](docs/REVIEW-ENHANCEMENTS.md) §F.
 
 ---
 
@@ -266,13 +329,15 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 
 In recommended order:
 
-1. **Verify trace-mode in the UI on a richer C# project.** Local smoke-tests passed on `CodeIntel.sln` (Callees depth=1 → 8 nodes ~1m25s; Both depth=2 → 20 nodes ~3m). Want to confirm the experience on something bigger — controller/service entry points in a real LOB app. Watch for performance and graph readability, plus that the DB/HTTP NodeKind classification fires correctly on EF/HttpClient code.
-2. **LSP + tree-sitter abstraction.** Replace direct Roslyn calls in `ContextRequestHandler` + `TraceWalker` with an LSP client interface; add tree-sitter for fast structural scans. Ships TypeScript support (and the trace-mode TS support) for ~free once done. The single biggest compounding lever — analysis, trace, dead-code, business-docs all benefit.
-3. **PL/SQL repo-mode UI smoke-test + Oracle live (v2).** v1 (repo-only) is shipping — load a real PL/SQL repo, pick a stored proc, run each of the 4 SQL presets, verify the parser/resolver attaches the right object definitions and the Copilot Next Step briefs read cleanly. Then v2: add `Oracle.ManagedDataAccess.Core`, wire a `SqlOptions` (connection string) + `IOracleSchemaService` that fulfils the `OracleObject` context-request with live `ALL_TABLES` / `USER_SOURCE` data when the repo doesn't have the DDL committed. Pairs with the trace-mode DbAccess NodeKind (cross-workspace augmentation) once the LSP rewrite lands.
-4. **Whole-repo dead-code detection.** Tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch). Cheap once LSP is in place.
-5. **Business documentation mode.** Walk top-level entry points → trace → catalog. Builds directly on the trace pipeline.
-6. **Skills system.** Specialized prompts (`bug-async.md`, `bug-sql-injection.md`, etc.) that get routed in based on file content. Biggest single quality boost on a 7B local model.
-7. **Dockerfile + OpenShift** — multi-stage build (npm → dotnet publish), volume mount for `/models`, ConfigMap for runtime tuning.
+1. **Auth (C1) + configurable CORS (B5).** With persistence + rate limiting + ignored-findings + Save-to-repo all shipping, the remaining gating concern before OpenShift is identity. Plan: Windows Auth via IIS passthrough on the internal network, plus a small middleware shim that scopes `WorkspaceController.Browse` (currently still leaks the host filesystem) to an allowlist of root prefixes. Move CORS origins to `Cors:AllowedOrigins` while in `Program.cs`.
+2. **Test coverage for the hardening surface.** SQLite-backed stores, `ResultCache`, `IgnoredFindingsStore`, `PathSafety`, `SecretScrubber`, `FindingsAggregator`, `FindingsComparer`, `SkillRouter` — none of these have unit tests yet. Existing xunit project only covers PL/SQL parser/resolver/builder. Target: 70% line coverage on `Services/` before the OpenShift cutover (see [docs/REVIEW-ENHANCEMENTS.md](docs/REVIEW-ENHANCEMENTS.md) §E).
+3. **Verify trace-mode in the UI on a richer C# project.** Local smoke-tests passed on `CodeIntel.sln` (Callees depth=1 → 8 nodes ~1m25s; Both depth=2 → 20 nodes ~3m). Want to confirm the experience on something bigger — controller/service entry points in a real LOB app. Now interesting: does the `MaxTotalNodes=100` cap fire? Does the overload-candidate picker get hit? Does the callers cache change wall-clock noticeably?
+4. **LSP + tree-sitter abstraction (B1).** Replace direct Roslyn calls in `ContextRequestHandler` + `TraceWalker` with an LSP client interface; add tree-sitter for fast structural scans. Ships TypeScript support (and the trace-mode TS support) for ~free once done. The single biggest compounding lever — analysis, trace, dead-code, business-docs all benefit.
+5. **PL/SQL repo-mode UI smoke-test + Oracle live (v2).** v1 (repo-only) is shipping with an ANTLR-backed parser — load a real PL/SQL repo, pick a stored proc, run each of the 4 SQL presets, verify the parser/resolver attaches the right object definitions and the Copilot Next Step briefs read cleanly. Then v2: add `Oracle.ManagedDataAccess.Core`, wire a `SqlOptions` (connection string) + `IOracleSchemaService` that fulfils the `OracleObject` context-request with live `ALL_TABLES` / `USER_SOURCE` data when the repo doesn't have the DDL committed. Pairs with the trace-mode DbAccess NodeKind (cross-workspace augmentation) once the LSP rewrite lands.
+6. **Whole-repo dead-code detection.** Tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch). Cheap once LSP is in place.
+7. **Business documentation mode.** Walk top-level entry points → trace → catalog. Builds directly on the trace pipeline.
+8. **File-backed skills.** `SkillRouter` already ships with content-keyed predicates; the next step is moving the hard-coded addenda into `Prompts/skills/*.md` and routing by the same predicates.
+9. **Dockerfile + OpenShift** — multi-stage build (npm → dotnet publish), volume mounts for `/models` + `/data` (SQLite), ConfigMap for runtime tuning, `/readyz` wired to the readiness probe.
 
 ---
 

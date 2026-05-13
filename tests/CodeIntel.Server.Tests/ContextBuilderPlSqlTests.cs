@@ -56,7 +56,7 @@ public class ContextBuilderPlSqlTests : IAsyncLifetime
         // Unrelated SQL file — should NOT show up in context unless explicitly seeded.
         await WriteAllAsync("unrelated.sql", "CREATE TABLE unrelated (id NUMBER);");
 
-        _workspace = new WorkspaceService(NullLogger<WorkspaceService>.Instance);
+        _workspace = new WorkspaceService(Options.Create(new AnalysisOptions()), NullLogger<WorkspaceService>.Instance);
         var ws = await _workspace.LoadAsync(_root);
         _workspaceId = ws.Id;
     }
@@ -167,7 +167,7 @@ public class ContextBuilderPlSqlTests : IAsyncLifetime
             var jsFile = Path.Combine(jsRoot, "app.ts");
             await File.WriteAllTextAsync(jsFile, "export const x = 1;");
 
-            var jsWorkspace = new WorkspaceService(NullLogger<WorkspaceService>.Instance);
+            var jsWorkspace = new WorkspaceService(Options.Create(new AnalysisOptions()), NullLogger<WorkspaceService>.Instance);
             try
             {
                 var ws = await jsWorkspace.LoadAsync(jsRoot);

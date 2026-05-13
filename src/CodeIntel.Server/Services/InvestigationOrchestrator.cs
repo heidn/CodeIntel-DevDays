@@ -7,6 +7,11 @@ using Microsoft.Extensions.Options;
 
 namespace CodeIntel.Server.Services;
 
+public interface IAnalysisOrchestrator
+{
+    Task<Guid> StartAsync(AnalysisRequest request, CancellationToken ct = default);
+}
+
 /// <summary>
 /// Agentic loop: streams the LLM, fulfills context requests, and iterates until
 /// the model signals done or max iterations is reached.
@@ -16,6 +21,9 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
     private readonly IContextBuilder _contextBuilder;
     private readonly IPromptTemplateService _promptService;
     private readonly IContextRequestHandler _contextHandler;
+    private readonly IWorkspaceService _workspaceService;
+    private readonly IResultCache _resultCache;
+    private readonly ISkillRouter _skillRouter;
     private readonly ILlmService _llm;
     private readonly IAnalysisResultStore _store;
     private readonly IHubContext<AnalysisHub> _hub;
@@ -27,6 +35,9 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
         IContextBuilder contextBuilder,
         IPromptTemplateService promptService,
         IContextRequestHandler contextHandler,
+        IWorkspaceService workspaceService,
+        IResultCache resultCache,
+        ISkillRouter skillRouter,
         ILlmService llm,
         IAnalysisResultStore store,
         IHubContext<AnalysisHub> hub,
@@ -37,6 +48,9 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
         _contextBuilder = contextBuilder;
         _promptService = promptService;
         _contextHandler = contextHandler;
+        _workspaceService = workspaceService;
+        _resultCache = resultCache;
+        _skillRouter = skillRouter;
         _llm = llm;
         _store = store;
         _hub = hub;
@@ -82,7 +96,26 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
                 return;
             }
 
-            await group.SendAsync("AnalysisEvent", AnalysisEvents.Status("Building context..."), ct);
+            // F2: cache lookup — short-circuit if the same preset has already run against
+            // the same file contents with the same model.
+            var precomputedHash = await ContentHasher.HashFilesAsync(
+                _workspaceService, request.WorkspaceId, request.SelectedFilePaths, ct);
+            var cached = await _resultCache.LookupAsync(request, precomputedHash, _llm.ModelName, ct);
+            if (cached is not null)
+            {
+                await group.SendAsync("AnalysisEvent",
+                    AnalysisEvents.Status($"Cache hit — reusing result from {cached.StartedAt:HH:mm} ({cached.Findings.Count} findings)."), ct);
+                var replay = cached with { Id = analysisId, StartedAt = startedAt, CompletedAt = DateTime.UtcNow };
+                _store.Save(replay);
+                foreach (var f in cached.Findings)
+                    await group.SendAsync("AnalysisEvent", AnalysisEvents.Finding(f), ct);
+                await group.SendAsync("AnalysisEvent",
+                    AnalysisEvents.Completed(analysisId, 0, cached.Findings.Count), CancellationToken.None);
+                return;
+            }
+
+            await group.SendAsync("AnalysisEvent",
+                AnalysisEvents.Status($"Building context from {request.SelectedFilePaths.Count} file(s)..."), ct);
 
             var context = await _contextBuilder.BuildAsync(
                 request.WorkspaceId,
@@ -96,6 +129,14 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
             await group.SendAsync("AnalysisEvent",
                 AnalysisEvents.Started(context.EstimatedTokens, context.Files.Count), ct);
 
+            var skills = _skillRouter.RouteSkills(context);
+            if (skills.Count > 0)
+            {
+                await group.SendAsync("AnalysisEvent",
+                    AnalysisEvents.Status($"Skills active: {string.Join(", ", skills)}"), ct);
+                _logger.LogInformation("Skill router fired: {Skills}", string.Join(",", skills));
+            }
+
             var history = new List<ConversationTurn>();
             string prompt = _promptService.BuildAgentPrompt(request, context);
 
@@ -108,8 +149,8 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
 
                 await group.SendAsync("AnalysisEvent",
                     AnalysisEvents.Status(iteration == 0
-                        ? $"Running {_llm.ModelName}..."
-                        : $"Investigating (pass {iteration + 1}/{maxIters})..."), ct);
+                        ? $"Streaming first pass through {_llm.ModelName} ({_llm.BackendName}, ~{contextTokens:N0} tokens)..."
+                        : $"Pass {iteration + 1}/{maxIters} — incorporating new context and continuing analysis..."), ct);
 
                 var parser = new FindingStreamParser();
                 var iterationOutput = new StringBuilder();
@@ -160,8 +201,11 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
                     await group.SendAsync("AnalysisEvent",
                         AnalysisEvents.ContextRequested(cr.Type.ToString(), cr.Target), ct);
 
+                var requestSummary = string.Join(", ",
+                    contextRequests.Take(3).Select(c => $"{c.Type}={c.Target}"));
+                if (contextRequests.Count > 3) requestSummary += $", +{contextRequests.Count - 3} more";
                 await group.SendAsync("AnalysisEvent",
-                    AnalysisEvents.Status($"Fetching {contextRequests.Count} requested context item(s)..."), ct);
+                    AnalysisEvents.Status($"Fetching context: {requestSummary}"), ct);
 
                 var fulfillments = new List<ContextFulfillment>();
                 foreach (var cr in contextRequests)
@@ -179,6 +223,14 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
 
             sw.Stop();
 
+            // We computed this above for the cache lookup; reuse it.
+            var contentHash = precomputedHash;
+
+            // F8: collapse near-duplicate findings the 7B model often emits across iterations.
+            var aggregated = FindingsAggregator.Collapse(allFindings);
+            if (aggregated.Count != allFindings.Count)
+                _logger.LogInformation("Findings aggregator collapsed {From} → {To}", allFindings.Count, aggregated.Count);
+
             var result = new AnalysisResult(
                 Id: analysisId,
                 StartedAt: startedAt,
@@ -187,16 +239,26 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
                 PresetKey: request.PresetKey,
                 FreeTextPrompt: request.FreeTextPrompt,
                 AnalyzedFiles: analyzedRelativePaths,
-                Findings: allFindings,
+                Findings: aggregated,
                 RawLlmOutput: rawOutputBuilder.ToString(),
                 ContextTokens: contextTokens,
                 Duration: sw.Elapsed,
-                WorkspaceId: request.WorkspaceId
+                WorkspaceId: request.WorkspaceId,
+                WorkspaceRoot: ContentHasher.WorkspaceRoot(_workspaceService, request.WorkspaceId),
+                ContentHash: contentHash
             );
             _store.Save(result);
 
+            // Record the cache entry once persistence has the new analysis on file.
+            var cacheKey = ContentHasher.BuildCacheKey(request.PresetKey, _llm.ModelName, contentHash);
+            if (cacheKey is not null)
+            {
+                try { await _resultCache.RememberAsync(cacheKey, analysisId, CancellationToken.None); }
+                catch (Exception ex) { _logger.LogDebug(ex, "Cache write failed (non-fatal)"); }
+            }
+
             await group.SendAsync("AnalysisEvent",
-                AnalysisEvents.Completed(analysisId, sw.Elapsed.TotalSeconds, allFindings.Count), CancellationToken.None);
+                AnalysisEvents.Completed(analysisId, sw.Elapsed.TotalSeconds, aggregated.Count), CancellationToken.None);
         }
         catch (OperationCanceledException)
         {

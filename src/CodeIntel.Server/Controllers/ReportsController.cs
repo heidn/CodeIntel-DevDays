@@ -77,7 +77,9 @@ public class ReportsController : ControllerBase
             analysisId,
             absolutePath = writeResult.AbsolutePath,
             relativePath = writeResult.RelativePath,
-            copilotReference = $"#file:{writeResult.RelativePath}"
+            copilotReference = $"#file:{writeResult.RelativePath}",
+            redactionCount = writeResult.RedactionCount,
+            redactions = writeResult.Redactions,
         });
     }
 }

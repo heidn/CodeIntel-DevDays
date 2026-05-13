@@ -38,3 +38,21 @@ export async function saveReport(analysisId: string, outputPath?: string): Promi
   );
   return data;
 }
+
+export interface EstimateResult {
+  estimatedTokens: number;
+  estimatedSeconds: number;
+  sampleSize: number;
+  explanation: string;
+}
+
+export async function estimateRun(
+  workspaceId: string,
+  selectedFilePaths: string[]
+): Promise<EstimateResult> {
+  const { data } = await apiClient.post<EstimateResult>('/analysis/estimate', {
+    workspaceId,
+    selectedFilePaths,
+  });
+  return data;
+}

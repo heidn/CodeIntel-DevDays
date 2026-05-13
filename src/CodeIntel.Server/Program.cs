@@ -1,3 +1,4 @@
+using CodeIntel.Server.Data;
 using CodeIntel.Server.Hubs;
 using CodeIntel.Server.Models;
 using CodeIntel.Server.Services;
@@ -15,21 +16,27 @@ builder.Host.UseSerilog((ctx, cfg) => cfg
 // --- Options ---
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection("Llm"));
 builder.Services.Configure<AnalysisOptions>(builder.Configuration.GetSection("Analysis"));
+builder.Services.Configure<DataOptions>(builder.Configuration.GetSection("Data"));
 
 // --- Services ---
+builder.Services.AddSingleton<CodeIntelDb>();
 builder.Services.AddSingleton<IWorkspaceService, WorkspaceService>();
 builder.Services.AddSingleton<ILlmService, LlamaSharpService>();
-builder.Services.AddSingleton<IAnalysisResultStore, InMemoryAnalysisResultStore>();
+builder.Services.AddSingleton<IAnalysisResultStore, SqliteAnalysisResultStore>();
+builder.Services.AddSingleton<ISkillRouter, SkillRouter>();
 builder.Services.AddSingleton<IPromptTemplateService, PromptTemplateService>();
 builder.Services.AddSingleton<IReportGenerator, ReportGenerator>();
 builder.Services.AddSingleton<IReportWriter, ReportWriter>();
 builder.Services.AddSingleton<IAnalysisCancellationRegistry, AnalysisCancellationRegistry>();
+builder.Services.AddScoped<IAnalysisEstimator, AnalysisEstimator>();
+builder.Services.AddScoped<IResultCache, ResultCache>();
+builder.Services.AddScoped<IIgnoredFindingsStore, IgnoredFindingsStore>();
 builder.Services.AddSingleton<IPlSqlObjectParser, PlSqlObjectParser>();
 builder.Services.AddSingleton<IPlSqlRepoResolver, PlSqlRepoResolver>();
 builder.Services.AddScoped<IContextBuilder, ContextBuilder>();
 builder.Services.AddScoped<IContextRequestHandler, ContextRequestHandler>();
 builder.Services.AddScoped<IAnalysisOrchestrator, InvestigationOrchestrator>();
-builder.Services.AddSingleton<ITraceResultStore, InMemoryTraceResultStore>();
+builder.Services.AddSingleton<ITraceResultStore, SqliteTraceResultStore>();
 builder.Services.AddScoped<ITraceWalker, TraceWalker>();
 builder.Services.AddScoped<ITraceOrchestrator, TraceOrchestrator>();
 
@@ -58,6 +65,33 @@ builder.Services.AddCors(opts =>
         .AllowCredentials());
 });
 
+// C2: rate limiting on POST /api/analysis/run and POST /api/trace/run so a buggy
+// retry loop can't OOM the result store or pile inference jobs on the LLM lock.
+builder.Services.AddRateLimiter(opts =>
+{
+    var analysisOpts = builder.Configuration.GetSection("Analysis").Get<AnalysisOptions>() ?? new AnalysisOptions();
+    var perMinute = Math.Max(1, analysisOpts.RateLimitRunsPerMinute);
+
+    opts.AddPolicy("analysis-run", ctx =>
+        System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
+            factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = perMinute,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            }));
+
+    opts.OnRejected = async (ctx, ct) =>
+    {
+        ctx.HttpContext.Response.StatusCode = 429;
+        await ctx.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            error = "Too many runs in the last minute. Slow down or raise Analysis.RateLimitRunsPerMinute.",
+        }, ct);
+    };
+});
+
 var app = builder.Build();
 
 // --- Eager-load LLM model on startup (fire-and-forget, doesn't block startup) ---
@@ -78,6 +112,7 @@ _ = Task.Run(async () =>
 // --- Middleware ---
 app.UseSerilogRequestLogging();
 app.UseCors();
+app.UseRateLimiter();
 
 if (app.Environment.IsDevelopment())
 {

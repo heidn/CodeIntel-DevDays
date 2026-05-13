@@ -10,14 +10,21 @@ import {
   CircularProgress,
   Alert,
   Chip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  List,
+  ListItemButton,
+  ListItemText,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import AccountTreeIcon from '@mui/icons-material/AccountTreeOutlined';
 import { useTraceStore } from '../stores/traceStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
-import { startTrace } from '../api/trace';
+import { startTrace, resolveTraceCandidates } from '../api/trace';
 import { getAnalysisHub } from '../api/signalr';
-import type { TraceDirection } from '../types';
+import type { TraceDirection, TraceEntryPoint, EntryPointCandidate } from '../types';
 
 export default function TracePanel() {
   const workspace = useWorkspaceStore((s) => s.workspace);
@@ -35,29 +42,67 @@ export default function TracePanel() {
 
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting]   = useState(false);
+  const [candidates,  setCandidates]  = useState<EntryPointCandidate[] | null>(null);
 
   const isRunning = runState === 'starting' || runState === 'building' || runState === 'streaming' || runState === 'cancelling';
   const hasEntryPoint = !!entryPointLocation || entryPointName.trim().length > 0;
   const canRun = !!workspace && hasEntryPoint && !isRunning;
+
+  function buildEntryPoint(): TraceEntryPoint {
+    return entryPointLocation
+      ? { methodName: null, filePath: entryPointLocation.filePath, line: entryPointLocation.line, character: entryPointLocation.character }
+      : { methodName: entryPointName.trim(), filePath: null, line: null, character: null };
+  }
+
+  async function launchTrace(entryPoint: TraceEntryPoint, preferredFqn?: string | null) {
+    if (!workspace) return;
+    const traceId = crypto.randomUUID();
+    startRun(traceId);
+    const hub = getAnalysisHub();
+    await hub.joinAnalysis(traceId);
+    await startTrace({
+      workspaceId: workspace.id,
+      entryPoint,
+      direction,
+      depth,
+      traceId,
+      preferredFqn: preferredFqn ?? null,
+    });
+  }
 
   async function handleRun() {
     if (!workspace) return;
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const traceId = crypto.randomUUID();
-      startRun(traceId);
-      const hub = getAnalysisHub();
-      await hub.joinAnalysis(traceId);
-      await startTrace({
-        workspaceId: workspace.id,
-        entryPoint: entryPointLocation
-          ? { methodName: null, filePath: entryPointLocation.filePath, line: entryPointLocation.line, character: entryPointLocation.character }
-          : { methodName: entryPointName.trim(), filePath: null, line: null, character: null },
-        direction,
-        depth,
-        traceId,
-      });
+      const entryPoint = buildEntryPoint();
+      // Name-based entry point: probe for overloads first so the user picks
+      // the right one before we kick off a multi-minute graph walk.
+      if (!entryPointLocation && entryPoint.methodName) {
+        const found = await resolveTraceCandidates(workspace.id, entryPoint);
+        if (found.length > 1) {
+          setCandidates(found);
+          setSubmitting(false);
+          return;
+        }
+      }
+      await launchTrace(entryPoint);
+    } catch (err) {
+      const msg =
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        (err instanceof Error ? err.message : 'Failed to start trace');
+      setSubmitError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function pickCandidate(c: EntryPointCandidate) {
+    setCandidates(null);
+    setSubmitError(null);
+    setSubmitting(true);
+    try {
+      await launchTrace(buildEntryPoint(), c.fqn);
     } catch (err) {
       const msg =
         (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
@@ -170,6 +215,32 @@ export default function TracePanel() {
       {submitError && (
         <Alert severity="error" sx={{ mt: 2, fontSize: '0.75rem' }}>{submitError}</Alert>
       )}
+
+      <Dialog open={!!candidates} onClose={() => setCandidates(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Multiple matches for "{entryPointName}"</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+            Pick the overload to trace.
+          </Typography>
+          <List dense>
+            {candidates?.map((c) => (
+              <ListItemButton key={c.fqn} onClick={() => pickCandidate(c)}>
+                <ListItemText
+                  primary={c.signature}
+                  secondary={`${c.filePath.split(/[\\/]/).pop()}:${c.line}`}
+                  slotProps={{
+                    primary:   { sx: { fontFamily: '"JetBrains Mono", monospace', fontSize: '0.85rem' } },
+                    secondary: { sx: { fontFamily: '"JetBrains Mono", monospace', fontSize: '0.7rem' } },
+                  }}
+                />
+              </ListItemButton>
+            ))}
+          </List>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCandidates(null)}>Cancel</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
