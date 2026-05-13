@@ -69,6 +69,7 @@ export default function FilePreviewPanel({
 
   const pinSnippet       = useWorkspaceStore((s) => s.pinSnippet);
   const setPaneMode      = useWorkspaceStore((s) => s.setPaneMode);
+  const wordWrap         = useWorkspaceStore((s) => s.wordWrap);
   const setEntryPointLocation = useTraceStore((s) => s.setEntryPointLocation);
 
   const codeContainerRef = useRef<HTMLDivElement>(null);
@@ -280,6 +281,10 @@ export default function FilePreviewPanel({
           fontFamily: '"JetBrains Mono", monospace',
           fontSize: '0.8rem',
           lineHeight: 1.6,
+          '&::-webkit-scrollbar':       { width: 10, height: 10 },
+          '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.14)', borderRadius: 5 },
+          '&::-webkit-scrollbar-thumb:hover': { bgcolor: 'rgba(255,255,255,0.24)' },
+          '&::-webkit-scrollbar-corner': { bgcolor: 'transparent' },
         }}
       >
         {lines.map((lineText, idx) => {
@@ -312,7 +317,8 @@ export default function FilePreviewPanel({
                   borderLeftColor: borderColor,
                   bgcolor: bgColor,
                   cursor: 'pointer',
-                  userSelect: 'none',
+                  width: wordWrap ? '100%' : 'max-content',
+                  minWidth: '100%',
                   '&:hover': {
                     bgcolor: selected
                       ? 'rgba(79, 70, 229, 0.18)'
@@ -336,6 +342,10 @@ export default function FilePreviewPanel({
                     userSelect: 'none',
                     flexShrink: 0,
                     borderRight: '1px solid rgba(255,255,255,0.06)',
+                    position: wordWrap ? 'static' : 'sticky',
+                    left: 0,
+                    bgcolor: '#1a1a2e',
+                    zIndex: 1,
                   }}
                 >
                   {lineNo}
@@ -346,10 +356,11 @@ export default function FilePreviewPanel({
                   component="span"
                   sx={{
                     px: 1.5,
-                    whiteSpace: 'pre',
+                    whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
+                    wordBreak: wordWrap ? 'break-word' : 'normal',
                     color: selected || isTarget ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.78)',
                     flex: 1,
-                    overflow: 'hidden',
+                    userSelect: 'text',
                   }}
                 >
                   {lineText || ' '}

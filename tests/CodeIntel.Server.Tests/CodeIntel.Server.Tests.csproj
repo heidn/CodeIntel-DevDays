@@ -12,6 +12,9 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Transitive of Microsoft.NET.Test.Sdk — pin patched 10.0.8 to silence NU1903
+         (GHSA-37gx-xxp4-5rgx, GHSA-w3x6-4m5h-cxqf). -->
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.8" />
   </ItemGroup>
 
   <ItemGroup>

@@ -56,14 +56,13 @@ public class ContextBuilderPlSqlTests : IAsyncLifetime
         // Unrelated SQL file — should NOT show up in context unless explicitly seeded.
         await WriteAllAsync("unrelated.sql", "CREATE TABLE unrelated (id NUMBER);");
 
-        _workspace = new WorkspaceService(Options.Create(new AnalysisOptions()), NullLogger<WorkspaceService>.Instance);
+        (_workspace, _) = TestWorkspaceHarness.Build();
         var ws = await _workspace.LoadAsync(_root);
         _workspaceId = ws.Id;
     }
 
     public Task DisposeAsync()
     {
-        _workspace?.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
         return Task.CompletedTask;
     }
@@ -167,21 +166,17 @@ public class ContextBuilderPlSqlTests : IAsyncLifetime
             var jsFile = Path.Combine(jsRoot, "app.ts");
             await File.WriteAllTextAsync(jsFile, "export const x = 1;");
 
-            var jsWorkspace = new WorkspaceService(Options.Create(new AnalysisOptions()), NullLogger<WorkspaceService>.Instance);
-            try
-            {
-                var ws = await jsWorkspace.LoadAsync(jsRoot);
-                var parser   = new PlSqlObjectParser();
-                var resolver = new PlSqlRepoResolver(jsWorkspace, NullLogger<PlSqlRepoResolver>.Instance);
-                var options  = Options.Create(new AnalysisOptions { MaxContextTokens = 5000 });
-                var builder  = new ContextBuilder(jsWorkspace, parser, resolver, options, NullLogger<ContextBuilder>.Instance);
+            var (jsWorkspace, _) = TestWorkspaceHarness.Build();
+            var ws = await jsWorkspace.LoadAsync(jsRoot);
+            var parser   = new PlSqlObjectParser();
+            var resolver = new PlSqlRepoResolver(jsWorkspace, NullLogger<PlSqlRepoResolver>.Instance);
+            var options  = Options.Create(new AnalysisOptions { MaxContextTokens = 5000 });
+            var builder  = new ContextBuilder(jsWorkspace, parser, resolver, options, NullLogger<ContextBuilder>.Instance);
 
-                var ctx = await builder.BuildAsync(ws.Id, new[] { jsFile }, maxTokenBudget: 5000);
+            var ctx = await builder.BuildAsync(ws.Id, new[] { jsFile }, maxTokenBudget: 5000);
 
-                Assert.Single(ctx.Files);
-                Assert.DoesNotContain(ctx.Files, f => f.IsResolvedDependency);
-            }
-            finally { jsWorkspace.Dispose(); }
+            Assert.Single(ctx.Files);
+            Assert.DoesNotContain(ctx.Files, f => f.IsResolvedDependency);
         }
         finally
         {

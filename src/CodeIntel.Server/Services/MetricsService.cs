@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CodeIntel.Server.Data;
 using CodeIntel.Server.Models;
+using CodeIntel.Server.Services.LanguageBackends;
 using Microsoft.Data.Sqlite;
 
 namespace CodeIntel.Server.Services;
@@ -26,21 +27,18 @@ public class MetricsService : IMetricsService
     };
 
     private readonly IWorkspaceService _workspace;
-    private readonly ICSharpMetricsAnalyzer _csharp;
-    private readonly IPlSqlMetricsAnalyzer _plsql;
+    private readonly ILanguageBackendRegistry _backends;
     private readonly CodeIntelDb _db;
     private readonly ILogger<MetricsService> _logger;
 
     public MetricsService(
         IWorkspaceService workspace,
-        ICSharpMetricsAnalyzer csharp,
-        IPlSqlMetricsAnalyzer plsql,
+        ILanguageBackendRegistry backends,
         CodeIntelDb db,
         ILogger<MetricsService> logger)
     {
         _workspace = workspace;
-        _csharp = csharp;
-        _plsql = plsql;
+        _backends = backends;
         _db = db;
         _logger = logger;
     }
@@ -74,6 +72,8 @@ public class MetricsService : IMetricsService
             return cached;
         }
 
+        var backend = _backends.GetBackendForWorkspace(workspaceId);
+
         var fileResults = new List<FileMetricsResult>(targets.Count);
         foreach (var path in targets)
         {
@@ -82,14 +82,7 @@ public class MetricsService : IMetricsService
             {
                 var content = await _workspace.ReadFileAsync(workspaceId, path, ct);
                 var relative = MakeRelative(ws.RootFolder, path);
-                var ext = Path.GetExtension(path).ToLowerInvariant();
-                FileMetricsResult result = ext switch
-                {
-                    ".cs"                                       => _csharp.Analyze(path, relative, content),
-                    ".sql" or ".pkg" or ".pkb" or ".pks" or ".pls" => _plsql.Analyze(path, relative, content),
-                    _ => new FileMetricsResult(path, relative, ws.Language, content.Count(c => c == '\n') + 1, []),
-                };
-                fileResults.Add(result);
+                fileResults.Add(backend.ComputeFileMetrics(path, relative, content));
             }
             catch (Exception ex)
             {

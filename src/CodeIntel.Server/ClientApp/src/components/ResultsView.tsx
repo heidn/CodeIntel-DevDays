@@ -14,6 +14,7 @@ import {
   TextField,
   Snackbar,
   CircularProgress,
+  Link,
 } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
@@ -45,6 +46,7 @@ const severityConfig: Record<Severity, { color: string; bg: string; icon: string
 function FindingCard({ finding, index }: { finding: Finding; index: number }) {
   const cfg = severityConfig[finding.severity] ?? severityConfig.info;
   const isLowConfidence = finding.confidence === 'low';
+  const [snippetExpanded, setSnippetExpanded] = useState(false);
   return (
     <Paper
       sx={{
@@ -129,22 +131,36 @@ function FindingCard({ finding, index }: { finding: Finding; index: number }) {
         {finding.description}
       </Typography>
       {finding.codeSnippet && (
-        <Box
-          component="pre"
-          sx={{
-            mt: 1, mb: 0, p: 1,
-            bgcolor: '#1e1e2e',
-            border: '1px solid rgba(0,0,0,0.15)',
-            borderRadius: 0.75,
-            fontFamily: '"JetBrains Mono", monospace',
-            fontSize: '0.6875rem',
-            color: '#cdd6f4',
-            overflow: 'auto',
-            maxHeight: 120,
-          }}
-        >
-          {finding.codeSnippet}
-        </Box>
+        <>
+          <Box
+            component="pre"
+            sx={{
+              mt: 1, mb: 0, p: 1,
+              bgcolor: '#1e1e2e',
+              border: '1px solid rgba(0,0,0,0.15)',
+              borderRadius: 0.75,
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: '0.6875rem',
+              color: '#cdd6f4',
+              overflow: 'auto',
+              maxHeight: snippetExpanded ? 'none' : 400,
+              whiteSpace: 'pre',
+              '&::-webkit-scrollbar':       { width: 8, height: 8 },
+              '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.14)', borderRadius: 4 },
+            }}
+          >
+            {finding.codeSnippet}
+          </Box>
+          <Link
+            component="button"
+            type="button"
+            onClick={() => setSnippetExpanded((e) => !e)}
+            underline="hover"
+            sx={{ mt: 0.5, fontSize: '0.65rem', fontFamily: '"JetBrains Mono", monospace', color: 'text.secondary' }}
+          >
+            {snippetExpanded ? 'Collapse snippet' : 'Expand snippet'}
+          </Link>
+        </>
       )}
     </Paper>
   );
@@ -264,7 +280,7 @@ export default function ResultsView() {
   }
 
   return (
-    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, bgcolor: 'background.paper' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', flex: '1 0 480px', bgcolor: 'background.paper' }}>
       {/* Header */}
       <Stack
         direction="row"
@@ -558,6 +574,8 @@ export default function ResultsView() {
               wordBreak: 'break-word',
               borderRight: findings.length > 0 ? '1px solid' : 'none',
               borderColor: 'divider',
+              '&::-webkit-scrollbar':       { width: 8, height: 8 },
+              '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.14)', borderRadius: 4 },
             }}
           >
             {runState === 'idle' && (
@@ -609,11 +627,13 @@ export default function ResultsView() {
           {findings.length > 0 && (
             <Box
               sx={{
-                width: 380,
-                minWidth: 380,
+                flex: '0 0 360px',
+                minWidth: 280,
                 p: 2,
                 overflow: 'auto',
                 bgcolor: 'background.default',
+                '&::-webkit-scrollbar':       { width: 8, height: 8 },
+                '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.14)', borderRadius: 4 },
               }}
             >
               <Stack direction="row" sx={{ alignItems: 'baseline', justifyContent: 'space-between', mb: 1.5 }}>

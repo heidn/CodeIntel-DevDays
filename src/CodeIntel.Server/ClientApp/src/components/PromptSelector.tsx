@@ -10,8 +10,12 @@ import {
   CircularProgress,
   Alert,
   Paper,
+  Collapse,
+  IconButton,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import EditIcon from '@mui/icons-material/EditOutlined';
+import ExpandLessIcon from '@mui/icons-material/ExpandLessOutlined';
 import SkullIcon from '@mui/icons-material/HeartBrokenOutlined';
 import BugReportIcon from '@mui/icons-material/BugReportOutlined';
 import GavelIcon from '@mui/icons-material/GavelOutlined';
@@ -46,6 +50,7 @@ function baseFileName(path: string): string {
 
 export default function PromptSelector() {
   const [mode, setMode] = useState<Mode>('preset');
+  const [expanded, setExpanded] = useState(true);
   const workspace     = useWorkspaceStore((s) => s.workspace);
   const selectedFiles = useWorkspaceStore((s) => s.selectedFiles);
   const pinnedSnippet = useWorkspaceStore((s) => s.pinnedSnippet);
@@ -74,6 +79,11 @@ export default function PromptSelector() {
     if (presets.some((p) => p.key === selectedPresetKey)) return;
     setPreset(null);
   }, [selectedPresetKey, presets, setPreset]);
+
+  // Auto-collapse when a new run starts so ResultsView gets the freed vertical space.
+  useEffect(() => {
+    if (runState === 'starting') setExpanded(false);
+  }, [runState]);
 
   // Debounced cost/time estimate when the selection changes.
   const [estimate, setEstimate] = useState<EstimateResult | null>(null);
@@ -130,32 +140,93 @@ export default function PromptSelector() {
     });
   };
 
+  const activePresetName =
+    mode === 'preset'
+      ? presets.find((p) => p.key === selectedPresetKey)?.name ?? 'No preset'
+      : 'Free text';
+
   return (
-    <Box sx={{ p: 3, bgcolor: 'background.paper' }}>
-      <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-        <Typography variant="overline" color="text.secondary">
-          Analysis
-        </Typography>
-        <ToggleButtonGroup
-          value={mode}
-          exclusive
-          size="small"
-          onChange={(_, v) => v && setMode(v)}
-          sx={{
-            '& .MuiToggleButton-root': {
-              py: 0.25,
-              px: 1.5,
-              fontSize: '0.75rem',
-              textTransform: 'none',
-              border: '1px solid',
-              borderColor: 'divider',
-            },
-          }}
-        >
-          <ToggleButton value="preset">Preset</ToggleButton>
-          <ToggleButton value="freeText">Free Text</ToggleButton>
-        </ToggleButtonGroup>
+    <Box sx={{ p: expanded ? 3 : 1.5, bgcolor: 'background.paper', transition: 'padding 0.18s ease' }}>
+      <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: expanded ? 2 : 0, gap: 1 }}>
+        <Stack direction="row" sx={{ alignItems: 'center', gap: 1, minWidth: 0, flex: 1 }}>
+          <Typography variant="overline" color="text.secondary" sx={{ flexShrink: 0 }}>
+            Analysis
+          </Typography>
+          {!expanded && (
+            <>
+              <Chip
+                size="small"
+                label={activePresetName}
+                sx={{
+                  bgcolor: selectedPresetKey || mode === 'freeText' ? 'rgba(79,70,229,0.10)' : 'rgba(100,116,139,0.10)',
+                  color: selectedPresetKey || mode === 'freeText' ? 'primary.main' : 'text.secondary',
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: '0.7rem',
+                  maxWidth: 240,
+                  '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
+                }}
+              />
+              {selectedFiles.size > 0 && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`${selectedFiles.size} ${selectedFiles.size === 1 ? 'file' : 'files'}`}
+                  sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.65rem', color: 'text.secondary' }}
+                />
+              )}
+              {estimate && estimate.estimatedTokens > 0 && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  title={estimate.explanation}
+                  label={`~${estimate.estimatedTokens.toLocaleString()} tok`}
+                  sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.65rem', color: 'text.secondary' }}
+                />
+              )}
+            </>
+          )}
+        </Stack>
+        {expanded ? (
+          <Stack direction="row" sx={{ alignItems: 'center', gap: 0.5 }}>
+            <ToggleButtonGroup
+              value={mode}
+              exclusive
+              size="small"
+              onChange={(_, v) => v && setMode(v)}
+              sx={{
+                '& .MuiToggleButton-root': {
+                  py: 0.25,
+                  px: 1.5,
+                  fontSize: '0.75rem',
+                  textTransform: 'none',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                },
+              }}
+            >
+              <ToggleButton value="preset">Preset</ToggleButton>
+              <ToggleButton value="freeText">Free Text</ToggleButton>
+            </ToggleButtonGroup>
+            {runState !== 'idle' && (
+              <IconButton size="small" onClick={() => setExpanded(false)} title="Collapse">
+                <ExpandLessIcon sx={{ fontSize: 18 }} />
+              </IconButton>
+            )}
+          </Stack>
+        ) : (
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<EditIcon sx={{ fontSize: 14 }} />}
+            onClick={() => setExpanded(true)}
+            sx={{ fontSize: '0.72rem', py: 0.25, textTransform: 'none', flexShrink: 0 }}
+          >
+            Edit
+          </Button>
+        )}
       </Stack>
+
+      <Collapse in={expanded} timeout={180} unmountOnExit={false}>
 
       {mode === 'preset' && (
         <Box
@@ -302,6 +373,7 @@ export default function PromptSelector() {
           {(runMutation.error as Error).message}
         </Alert>
       )}
+      </Collapse>
     </Box>
   );
 }

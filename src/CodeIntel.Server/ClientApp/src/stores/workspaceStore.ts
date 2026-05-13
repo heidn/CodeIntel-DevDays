@@ -8,6 +8,7 @@ interface WorkspaceState {
   pinnedSnippet: PinnedSnippet | null;
   paneMode: 'analysis' | 'trace' | 'metrics';
   solutionPanelCollapsed: boolean;
+  wordWrap: boolean;
 
   setWorkspace: (ws: Workspace | null) => void;
   toggleFile: (absolutePath: string) => void;
@@ -17,6 +18,7 @@ interface WorkspaceState {
   pinSnippet: (snippet: PinnedSnippet | null) => void;
   setPaneMode: (mode: 'analysis' | 'trace' | 'metrics') => void;
   setSolutionPanelCollapsed: (collapsed: boolean) => void;
+  setWordWrap: (wrap: boolean) => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
@@ -26,6 +28,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   pinnedSnippet: null,
   paneMode: 'analysis',
   solutionPanelCollapsed: false,
+  wordWrap: false,
 
   setWorkspace: (ws) => set({ workspace: ws, selectedFiles: new Set(), previewedFile: null, pinnedSnippet: null }),
 
@@ -50,4 +53,5 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   pinSnippet: (snippet) => set({ pinnedSnippet: snippet }),
   setPaneMode: (mode) => set({ paneMode: mode }),
   setSolutionPanelCollapsed: (collapsed) => set({ solutionPanelCollapsed: collapsed }),
+  setWordWrap: (wrap) => set({ wordWrap: wrap }),
 }));

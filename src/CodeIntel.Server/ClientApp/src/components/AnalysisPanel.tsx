@@ -8,6 +8,7 @@ import BarChartIcon from '@mui/icons-material/BarChartOutlined';
 import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutlined';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
+import WrapTextIcon from '@mui/icons-material/WrapText';
 import PromptSelector from './PromptSelector';
 import ResultsView from './ResultsView';
 import TracePanel from './TracePanel';
@@ -32,6 +33,8 @@ export default function AnalysisPanel() {
   const selectedFiles            = useWorkspaceStore((s) => s.selectedFiles);
   const toggleFile               = useWorkspaceStore((s) => s.toggleFile);
   const setSolutionPanelCollapsed = useWorkspaceStore((s) => s.setSolutionPanelCollapsed);
+  const wordWrap                  = useWorkspaceStore((s) => s.wordWrap);
+  const setWordWrap               = useWorkspaceStore((s) => s.setWordWrap);
   const [openFileTabs, setOpenFileTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab]       = useState<string | null>(null);
   const [previewWidth, setPreviewWidth] = useState(560);
@@ -157,7 +160,14 @@ export default function AnalysisPanel() {
             </Stack>
 
             <Stack
-              sx={{ flex: 1, minHeight: 0 }}
+              sx={{
+                flex: 1,
+                minHeight: 0,
+                overflow: 'auto',
+                '&::-webkit-scrollbar':       { width: 8, height: 8 },
+                '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.14)', borderRadius: 4 },
+                '&::-webkit-scrollbar-thumb:hover': { bgcolor: 'rgba(255,255,255,0.24)' },
+              }}
               divider={<Box sx={{ borderBottom: '1px solid', borderColor: 'divider' }} />}
             >
               {paneMode === 'analysis' && (<><PromptSelector /><ResultsView /></>)}
@@ -277,6 +287,20 @@ export default function AnalysisPanel() {
                     {selectedFiles.has(path)
                       ? <CheckCircleIcon sx={{ fontSize: 16 }} />
                       : <AddCircleOutlineIcon sx={{ fontSize: 16 }} />}
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title={wordWrap ? 'Disable word wrap' : 'Enable word wrap'} placement="top">
+                  <IconButton
+                    size="small"
+                    onClick={() => setWordWrap(!wordWrap)}
+                    sx={{
+                      p: 0.25,
+                      flexShrink: 0,
+                      color: wordWrap ? 'primary.main' : 'text.disabled',
+                      '&:hover': { color: wordWrap ? 'primary.main' : 'text.primary' },
+                    }}
+                  >
+                    <WrapTextIcon sx={{ fontSize: 16 }} />
                   </IconButton>
                 </Tooltip>
                 <Tooltip title="Reveal in file tree" placement="top">

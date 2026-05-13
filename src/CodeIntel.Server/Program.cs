@@ -2,6 +2,8 @@ using CodeIntel.Server.Data;
 using CodeIntel.Server.Hubs;
 using CodeIntel.Server.Models;
 using CodeIntel.Server.Services;
+using CodeIntel.Server.Services.LanguageBackends;
+using CodeIntel.Server.Services.LanguageBackends.Lsp;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -17,6 +19,7 @@ builder.Host.UseSerilog((ctx, cfg) => cfg
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection("Llm"));
 builder.Services.Configure<AnalysisOptions>(builder.Configuration.GetSection("Analysis"));
 builder.Services.Configure<DataOptions>(builder.Configuration.GetSection("Data"));
+builder.Services.Configure<LspOptions>(builder.Configuration.GetSection("Lsp"));
 
 // --- Services ---
 builder.Services.AddSingleton<CodeIntelDb>();
@@ -42,6 +45,33 @@ builder.Services.AddScoped<ITraceOrchestrator, TraceOrchestrator>();
 builder.Services.AddSingleton<ICSharpMetricsAnalyzer, CSharpMetricsAnalyzer>();
 builder.Services.AddSingleton<IPlSqlMetricsAnalyzer, PlSqlMetricsAnalyzer>();
 builder.Services.AddScoped<IMetricsService, MetricsService>();
+
+// --- B1: language backend abstraction ---
+// Each backend is a singleton, registered both under its concrete type (so
+// WorkspaceService/ContextRequestHandler can grab the C#/PL-SQL ones directly
+// for legacy paths) and under ILanguageBackend (so the registry can enumerate
+// them). The registry is the dispatch layer that picks a backend per workspace.
+builder.Services.AddSingleton<CSharpRoslynBackend>();
+builder.Services.AddSingleton<PlSqlBackend>();
+builder.Services.AddSingleton<JavaBackend>();
+builder.Services.AddSingleton<TypeScriptLspBackend>();
+builder.Services.AddSingleton<ILanguageBackend>(sp => sp.GetRequiredService<CSharpRoslynBackend>());
+builder.Services.AddSingleton<ILanguageBackend>(sp => sp.GetRequiredService<PlSqlBackend>());
+builder.Services.AddSingleton<ILanguageBackend>(sp => sp.GetRequiredService<JavaBackend>());
+builder.Services.AddSingleton<ILanguageBackend>(sp => sp.GetRequiredService<TypeScriptLspBackend>());
+builder.Services.AddSingleton<ILanguageBackendRegistry, LanguageBackendRegistry>();
+
+// LSP session manager. Picks the real LspSessionManager (spawns child processes
+// per-workspace) when Lsp:Enabled=true (default). Falls back to the no-op stub
+// when LSP is disabled, in which case TS workspaces still load and the file
+// tree + raw analysis still work, but trace/callers/definition for TS are no-ops.
+{
+    var lspEnabled = builder.Configuration.GetSection("Lsp").GetValue("Enabled", defaultValue: true);
+    if (lspEnabled)
+        builder.Services.AddSingleton<ILspSessionManager, LspSessionManager>();
+    else
+        builder.Services.AddSingleton<ILspSessionManager, NullLspSessionManager>();
+}
 
 // --- Web ---
 builder.Services.AddControllers()

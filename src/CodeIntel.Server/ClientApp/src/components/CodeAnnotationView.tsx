@@ -8,7 +8,9 @@ import {
   CircularProgress,
   Alert,
   Tooltip,
+  Link,
 } from '@mui/material';
+import { useWorkspaceStore } from '../stores/workspaceStore';
 import BugReportIcon from '@mui/icons-material/BugReportOutlined';
 import WarningAmberIcon from '@mui/icons-material/WarningAmberOutlined';
 import LightbulbIcon from '@mui/icons-material/LightbulbOutlined';
@@ -68,6 +70,7 @@ interface FileViewProps {
 
 function FileView({ workspaceId, absolutePath, findings }: FileViewProps) {
   const [expandedLines, setExpandedLines] = useState<Set<number>>(new Set());
+  const wordWrap = useWorkspaceStore((s) => s.wordWrap);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['file', workspaceId, absolutePath],
@@ -107,8 +110,8 @@ function FileView({ workspaceId, absolutePath, findings }: FileViewProps) {
         fontFamily: '"JetBrains Mono", monospace',
         fontSize: '0.8rem',
         lineHeight: 1.6,
-        overflow: 'auto',
-        flex: 1,
+        width: wordWrap ? '100%' : 'max-content',
+        minWidth: '100%',
       }}
     >
       {lines.map((lineText, idx) => {
@@ -128,6 +131,8 @@ function FileView({ workspaceId, absolutePath, findings }: FileViewProps) {
                 alignItems: 'stretch',
                 bgcolor: hasFindings ? meta?.bg : 'transparent',
                 borderLeft: hasFindings ? `3px solid ${meta?.border}` : '3px solid transparent',
+                width: wordWrap ? '100%' : 'max-content',
+                minWidth: '100%',
                 '&:hover': { bgcolor: hasFindings ? meta?.bg : 'rgba(255,255,255,0.02)' },
               }}
             >
@@ -143,6 +148,10 @@ function FileView({ workspaceId, absolutePath, findings }: FileViewProps) {
                   flexShrink: 0,
                   borderRight: '1px solid rgba(255,255,255,0.06)',
                   mr: 0,
+                  position: wordWrap ? 'static' : 'sticky',
+                  left: 0,
+                  bgcolor: '#1a1a2e',
+                  zIndex: 1,
                 }}
               >
                 {lineNo}
@@ -194,10 +203,11 @@ function FileView({ workspaceId, absolutePath, findings }: FileViewProps) {
                 sx={{
                   px: 1,
                   py: 0,
-                  whiteSpace: 'pre',
+                  whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
+                  wordBreak: wordWrap ? 'break-word' : 'normal',
                   color: hasFindings ? '#f8f8f2' : 'rgba(255,255,255,0.78)',
                   flex: 1,
-                  overflow: 'hidden',
+                  userSelect: 'text',
                 }}
               >
                 {lineText || ' '}
@@ -205,68 +215,86 @@ function FileView({ workspaceId, absolutePath, findings }: FileViewProps) {
             </Box>
 
             {/* Inline comment bubbles */}
-            {isExpanded && lineFindings.map((finding, fi) => {
-              const fm = severityMeta[finding.severity] ?? severityMeta.info;
-              return (
-                <Paper
-                  key={fi}
-                  elevation={0}
-                  sx={{
-                    mx: 2,
-                    my: 0.5,
-                    p: 1.5,
-                    bgcolor: 'rgba(30,30,46,0.95)',
-                    border: `1px solid ${fm.border}44`,
-                    borderLeft: `3px solid ${fm.border}`,
-                    borderRadius: 1,
-                    position: 'relative',
-                  }}
-                >
-                  <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 0.5 }}>
-                    <Box sx={{ color: fm.color, display: 'flex' }}>{fm.icon}</Box>
-                    <Typography
-                      variant="caption"
-                      sx={{ color: fm.color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: '0.65rem' }}
-                    >
-                      {fm.label}
-                    </Typography>
-                    <Typography variant="caption" sx={{ fontFamily: '"JetBrains Mono", monospace', color: 'rgba(255,255,255,0.4)', fontSize: '0.65rem' }}>
-                      line {finding.lineNumber}
-                    </Typography>
-                  </Stack>
-                  <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.25, fontSize: '0.8rem', color: 'rgba(255,255,255,0.9)' }}>
-                    {finding.title}
-                  </Typography>
-                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.55)', display: 'block', lineHeight: 1.5 }}>
-                    {finding.description}
-                  </Typography>
-                  {finding.codeSnippet && (
-                    <Box
-                      component="pre"
-                      sx={{
-                        mt: 1,
-                        mb: 0,
-                        p: 1,
-                        bgcolor: '#11111b',
-                        borderRadius: 0.75,
-                        fontFamily: '"JetBrains Mono", monospace',
-                        fontSize: '0.7rem',
-                        color: '#cdd6f4',
-                        overflow: 'auto',
-                        maxHeight: 100,
-                        border: '1px solid rgba(255,255,255,0.08)',
-                      }}
-                    >
-                      {finding.codeSnippet}
-                    </Box>
-                  )}
-                </Paper>
-              );
-            })}
+            {isExpanded && lineFindings.map((finding, fi) => (
+              <BubbleFinding key={fi} finding={finding} />
+            ))}
           </Box>
         );
       })}
     </Box>
+  );
+}
+
+function BubbleFinding({ finding }: { finding: Finding }) {
+  const fm = severityMeta[finding.severity] ?? severityMeta.info;
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        mx: 2,
+        my: 0.5,
+        p: 1.5,
+        bgcolor: 'rgba(30,30,46,0.95)',
+        border: `1px solid ${fm.border}44`,
+        borderLeft: `3px solid ${fm.border}`,
+        borderRadius: 1,
+        position: 'relative',
+      }}
+    >
+      <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 0.5 }}>
+        <Box sx={{ color: fm.color, display: 'flex' }}>{fm.icon}</Box>
+        <Typography
+          variant="caption"
+          sx={{ color: fm.color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: '0.65rem' }}
+        >
+          {fm.label}
+        </Typography>
+        <Typography variant="caption" sx={{ fontFamily: '"JetBrains Mono", monospace', color: 'rgba(255,255,255,0.4)', fontSize: '0.65rem' }}>
+          line {finding.lineNumber}
+        </Typography>
+      </Stack>
+      <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.25, fontSize: '0.8rem', color: 'rgba(255,255,255,0.9)' }}>
+        {finding.title}
+      </Typography>
+      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.55)', display: 'block', lineHeight: 1.5 }}>
+        {finding.description}
+      </Typography>
+      {finding.codeSnippet && (
+        <>
+          <Box
+            component="pre"
+            sx={{
+              mt: 1,
+              mb: 0,
+              p: 1,
+              bgcolor: '#11111b',
+              borderRadius: 0.75,
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: '0.7rem',
+              color: '#cdd6f4',
+              overflow: 'auto',
+              maxHeight: expanded ? 'none' : 400,
+              border: '1px solid rgba(255,255,255,0.08)',
+              whiteSpace: 'pre',
+              '&::-webkit-scrollbar':       { width: 8, height: 8 },
+              '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.14)', borderRadius: 4 },
+            }}
+          >
+            {finding.codeSnippet}
+          </Box>
+          <Link
+            component="button"
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            underline="hover"
+            sx={{ mt: 0.5, fontSize: '0.65rem', fontFamily: '"JetBrains Mono", monospace', color: 'text.secondary' }}
+          >
+            {expanded ? 'Collapse snippet' : 'Expand snippet'}
+          </Link>
+        </>
+      )}
+    </Paper>
   );
 }
 
@@ -347,7 +375,18 @@ export default function CodeAnnotationView({ workspaceId, filePaths, findings }:
       </Box>
 
       {/* Code view */}
-      <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', bgcolor: '#1a1a2e' }}>
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          overflow: 'auto',
+          bgcolor: '#1a1a2e',
+          '&::-webkit-scrollbar':       { width: 10, height: 10 },
+          '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.14)', borderRadius: 5 },
+          '&::-webkit-scrollbar-thumb:hover': { bgcolor: 'rgba(255,255,255,0.24)' },
+          '&::-webkit-scrollbar-corner': { bgcolor: 'transparent' },
+        }}
+      >
         <FileView
           key={currentPath}
           workspaceId={workspaceId}

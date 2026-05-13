@@ -52,7 +52,7 @@ public class PlSqlRepoResolverTests : IAsyncLifetime
             END;
             """);
 
-        _workspace = new WorkspaceService(Options.Create(new AnalysisOptions()), NullLogger<WorkspaceService>.Instance);
+        (_workspace, _) = TestWorkspaceHarness.Build();
         var ws = await _workspace.LoadAsync(_root);
         _workspaceId = ws.Id;
 
@@ -61,7 +61,6 @@ public class PlSqlRepoResolverTests : IAsyncLifetime
 
     public Task DisposeAsync()
     {
-        _workspace?.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
         return Task.CompletedTask;
     }

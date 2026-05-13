@@ -53,3 +53,38 @@ public class DataOptions
     /// </summary>
     public string DatabasePath { get; set; } = "data/codeintel.db";
 }
+
+public class LspOptions
+{
+    /// <summary>
+    /// Master switch. When false, TypeScript workspaces load and use the file-tree
+    /// path only — no semantic features (callers/callees/definition) for TS.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Command to launch the TypeScript LSP. Defaults to the typescript-language-server
+    /// binary as published by npm. Override to point at vtsls, biome, or a wrapper script.
+    /// On Windows the shim is `typescript-language-server.cmd`; on Linux/Mac it's
+    /// `typescript-language-server` (no extension).
+    /// </summary>
+    public string TypeScriptCommand { get; set; } =
+        OperatingSystem.IsWindows() ? "typescript-language-server.cmd" : "typescript-language-server";
+
+    /// <summary>
+    /// Args passed to the LSP binary. `--stdio` is required for LSP-over-stdio mode.
+    /// </summary>
+    public string[] TypeScriptArgs { get; set; } = ["--stdio"];
+
+    /// <summary>
+    /// Max seconds to wait for the `initialize` reply before giving up and falling back
+    /// to text search.
+    /// </summary>
+    public int InitializeTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Max seconds a single LSP request waits before timing out. Defends against a
+    /// hung child process taking down a long-running trace.
+    /// </summary>
+    public int RequestTimeoutSeconds { get; set; } = 15;
+}

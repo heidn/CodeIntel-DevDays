@@ -1,46 +1,113 @@
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using CodeIntel.Server.Models;
-using Microsoft.Build.Locator;
+using CodeIntel.Server.Services.LanguageBackends;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.Extensions.Options;
 using Workspace = CodeIntel.Server.Models.Workspace;
 
 namespace CodeIntel.Server.Services;
 
+/// <summary>
+/// Workspace facade. Owns the workspace dict, LRU eviction, and the workspace-scoped
+/// file-read with <see cref="PathSafety"/>. Language-specific loading and semantic
+/// queries are delegated to <see cref="ILanguageBackendRegistry"/> — this service
+/// is intentionally thin after the B1 refactor.
+///
+/// Note the class name (<c>WorkspaceService</c>) and file name (<c>RoslynWorkspaceService.cs</c>)
+/// differ for historical reasons — the original implementation was Roslyn-only.
+/// </summary>
 public interface IWorkspaceService
 {
     Task<Workspace> LoadAsync(string path, CancellationToken ct = default);
     Workspace? GetWorkspace(string workspaceId);
     Task<string> ReadFileAsync(string workspaceId, string relativeOrAbsolutePath, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the underlying Roslyn <see cref="Solution"/> for a workspace, or
+    /// null if the workspace isn't C#. Kept for legacy callers that need the raw
+    /// Solution; new code should go through <see cref="ILanguageBackend"/> instead.
+    /// </summary>
     Solution? GetRoslynSolution(string workspaceId);
-    Task<DefinitionLocation?> FindDefinitionAsync(string workspaceId, string filePath, int line, int character, CancellationToken ct = default);
+
+    Task<DefinitionLocation?> FindDefinitionAsync(
+        string workspaceId, string filePath, int line, int character, CancellationToken ct = default);
 }
 
-public sealed class WorkspaceService : IWorkspaceService, IDisposable
+public sealed class WorkspaceService : IWorkspaceService
 {
-    private static bool _msbuildRegistered;
-    private static readonly object _msbuildLock = new();
-
     private readonly ILogger<WorkspaceService> _logger;
     private readonly AnalysisOptions _options;
-    private readonly ConcurrentDictionary<string, LoadedWorkspace> _workspaces = new();
+    private readonly IServiceProvider _services;
+
+    // Lazy-resolved because the registry depends transitively on PlSqlBackend,
+    // which depends on PlSqlRepoResolver, which depends on this WorkspaceService —
+    // forming a ctor cycle. Resolved on first use after the container is built.
+    private ILanguageBackendRegistry? _registry;
+    private CSharpRoslynBackend? _csharpBackend;
+    private ILanguageBackendRegistry Registry =>
+        _registry ??= _services.GetRequiredService<ILanguageBackendRegistry>();
+    private CSharpRoslynBackend CSharpBackend =>
+        _csharpBackend ??= _services.GetRequiredService<CSharpRoslynBackend>();
+
+    private readonly ConcurrentDictionary<string, Workspace> _workspaces = new();
     private readonly object _lruLock = new();
     private readonly LinkedList<string> _lruOrder = new();
 
-    private static readonly string[] TsExtensions = [".ts", ".tsx", ".js", ".jsx"];
-    private static readonly string[] JavaExtensions = [".java"];
-    private static readonly string[] CsExtensions = [".cs"];
-    private static readonly string[] SqlExtensions = [".sql", ".pkg", ".pkb"];
-    private static readonly string[] TsExcludeDirs = ["node_modules", "dist", ".next", "out", ".cache"];
-    private static readonly string[] JavaExcludeDirs = ["target", "build", ".gradle"];
-    private static readonly string[] TsExcludePatterns = [".min.js", ".d.ts"];
-
-    public WorkspaceService(IOptions<AnalysisOptions> options, ILogger<WorkspaceService> logger)
+    public WorkspaceService(
+        IOptions<AnalysisOptions> options,
+        IServiceProvider services,
+        ILogger<WorkspaceService> logger)
     {
         _options = options.Value;
+        _services = services;
         _logger = logger;
+    }
+
+    public async Task<Workspace> LoadAsync(string path, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("Path cannot be empty", nameof(path));
+
+        var language = LanguageDetector.Detect(path);
+        _logger.LogInformation("Loading {Path} as {Language}", path, language);
+
+        var backend = Registry.GetBackend(language);
+        var workspace = await backend.LoadWorkspaceAsync(path, ct);
+
+        _workspaces[workspace.Id] = workspace;
+        Registry.RegisterWorkspace(workspace.Id, language);
+        await EvictIfNeededAsync(workspace.Id, ct);
+        TouchLru(workspace.Id);
+
+        _logger.LogInformation("Loaded workspace {Id} via {Backend}", workspace.Id, backend.Language);
+        return workspace;
+    }
+
+    private async Task EvictIfNeededAsync(string newId, CancellationToken ct)
+    {
+        // The new workspace will be added to the LRU after this — pre-check whether
+        // the *resulting* count would exceed the cap and evict the oldest if so.
+        string? evictId = null;
+        lock (_lruLock)
+        {
+            var cap = Math.Max(1, _options.MaxLoadedWorkspaces);
+            if (_lruOrder.Count >= cap && !_lruOrder.Contains(newId))
+            {
+                evictId = _lruOrder.Last!.Value;
+                _lruOrder.RemoveLast();
+            }
+        }
+
+        if (evictId is null) return;
+        if (_workspaces.TryRemove(evictId, out var evicted))
+        {
+            var backend = Registry.GetBackendForWorkspace(evictId);
+            try { await backend.OnWorkspaceUnloadedAsync(evictId, ct); }
+            catch (Exception ex) { _logger.LogDebug(ex, "Backend unload error for evicted workspace"); }
+            Registry.UnregisterWorkspace(evictId);
+            _logger.LogInformation("Evicted LRU workspace {Id} ({Project})", evictId, evicted.ProjectName);
+        }
     }
 
     private void TouchLru(string workspaceId)
@@ -49,36 +116,172 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
         {
             _lruOrder.Remove(workspaceId);
             _lruOrder.AddFirst(workspaceId);
-
-            var cap = Math.Max(1, _options.MaxLoadedWorkspaces);
-            while (_lruOrder.Count > cap)
-            {
-                var evictId = _lruOrder.Last!.Value;
-                _lruOrder.RemoveLast();
-                if (_workspaces.TryRemove(evictId, out var evicted))
-                {
-                    try { evicted.MsWorkspace?.Dispose(); }
-                    catch (Exception ex) { _logger.LogDebug(ex, "Workspace dispose error on LRU eviction"); }
-                    _logger.LogInformation("Evicted LRU workspace {Id} ({Project})", evictId, evicted.Workspace.ProjectName);
-                }
-            }
         }
     }
 
-    public async Task<Workspace> LoadAsync(string path, CancellationToken ct = default)
+    public Workspace? GetWorkspace(string workspaceId) =>
+        _workspaces.TryGetValue(workspaceId, out var w) ? w : null;
+
+    public Solution? GetRoslynSolution(string workspaceId) =>
+        CSharpBackend.GetSolution(workspaceId);
+
+    public async Task<string> ReadFileAsync(string workspaceId, string path, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException("Path cannot be empty", nameof(path));
+        var ws = GetWorkspace(workspaceId) ?? throw new InvalidOperationException("Workspace not loaded");
+        var rootDir = ws.RootFolder ?? throw new InvalidOperationException("Workspace has no resolved root folder.");
 
-        var language = DetectLanguage(path);
-        _logger.LogInformation("Loading {Path} as {Language}", path, language);
+        var absolutePath = Path.IsPathRooted(path) ? path : Path.Combine(rootDir, path);
 
-        return language == Language.CSharp
-            ? await LoadCSharpAsync(path, ct)
-            : await ScanFilesAsync(path, language, ct);
+        if (!PathSafety.IsInside(absolutePath, rootDir))
+            throw new UnauthorizedAccessException("Path is outside workspace root.");
+
+        var resolved = Path.GetFullPath(absolutePath);
+        if (!File.Exists(resolved))
+            throw new FileNotFoundException($"File not found: {resolved}");
+
+        return await File.ReadAllTextAsync(resolved, ct);
     }
 
-    private static Language DetectLanguage(string path)
+    public async Task<DefinitionLocation?> FindDefinitionAsync(
+        string workspaceId, string filePath, int line, int character, CancellationToken ct = default)
+    {
+        // First ask the backend — for C# this is the Roslyn semantic path, for TS
+        // it's an LSP textDocument/definition call. Fall back to a text-pattern
+        // search if the backend declines.
+        var backend = Registry.GetBackendForWorkspace(workspaceId);
+        var semantic = await backend.FindDefinitionAsync(workspaceId, filePath, line, character, ct);
+        if (semantic is not null) return semantic;
+
+        return await FindDefinitionByTextAsync(workspaceId, filePath, line, character, ct);
+    }
+
+    // ============================================================
+    //  Text-pattern fallback for non-semantic definition lookups
+    // ============================================================
+
+    private async Task<DefinitionLocation?> FindDefinitionByTextAsync(
+        string workspaceId, string requestingFilePath, int line, int character, CancellationToken ct)
+    {
+        if (!File.Exists(requestingFilePath)) return null;
+        var fileContent = await File.ReadAllTextAsync(requestingFilePath, ct);
+        var fileLines = fileContent.Split('\n');
+        var lineIndex = line - 1;
+        if (lineIndex < 0 || lineIndex >= fileLines.Length) return null;
+        var word = ExtractWordFromLine(fileLines[lineIndex], character);
+        if (word == null) return null;
+
+        var ws = GetWorkspace(workspaceId);
+        if (ws == null) return null;
+
+        var ext = Path.GetExtension(requestingFilePath).ToLowerInvariant();
+        var patterns = DefinitionPatterns(ext, word);
+        if (patterns.Count == 0) return null;
+
+        var groupExts = SameGroupExtensions(ext);
+
+        var candidates = ws.Projects
+            .SelectMany(p => p.Files)
+            .Where(f => groupExts.Any(e => f.AbsolutePath.EndsWith(e, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(f => string.Equals(f.AbsolutePath, requestingFilePath, StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+            .ToList();
+
+        foreach (var file in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var content = await File.ReadAllTextAsync(file.AbsolutePath, ct);
+                var lines = content.Split('\n');
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    foreach (var pattern in patterns)
+                    {
+                        if (pattern.IsMatch(lines[i]))
+                        {
+                            return new DefinitionLocation(
+                                FilePath: file.AbsolutePath,
+                                Line: i + 1,
+                                Character: 0,
+                                SymbolName: word);
+                        }
+                    }
+                }
+            }
+            catch { /* skip unreadable files */ }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractWordFromLine(string line, int character)
+    {
+        if (character >= line.Length) return null;
+        static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+        var pos = character;
+        if (!IsWordChar(line[pos]))
+        {
+            if (pos > 0 && IsWordChar(line[pos - 1])) pos--;
+            else return null;
+        }
+        var start = pos;
+        var end = pos;
+        while (start > 0 && IsWordChar(line[start - 1])) start--;
+        while (end < line.Length - 1 && IsWordChar(line[end + 1])) end++;
+        var word = line[start..(end + 1)];
+        return word.Length > 0 ? word : null;
+    }
+
+    private static IReadOnlyList<string> SameGroupExtensions(string ext) => ext switch
+    {
+        ".ts" or ".tsx" or ".js" or ".jsx" => [".ts", ".tsx", ".js", ".jsx"],
+        ".java"                             => [".java"],
+        ".sql" or ".pkg" or ".pkb"          => [".sql", ".pkg", ".pkb"],
+        _                                   => [ext],
+    };
+
+    private static IReadOnlyList<Regex> DefinitionPatterns(string ext, string word)
+    {
+        var w = Regex.Escape(word);
+        const RegexOptions R = RegexOptions.Compiled;
+        const RegexOptions RI = RegexOptions.Compiled | RegexOptions.IgnoreCase;
+
+        return ext switch
+        {
+            ".ts" or ".tsx" or ".js" or ".jsx" =>
+            [
+                new($@"(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+{w}\s*[(<]", R),
+                new($@"(?:export\s+)?(?:const|let|var)\s+{w}\s*[:=]", R),
+                new($@"(?:export\s+)?(?:abstract\s+)?(?:class|interface|type|enum)\s+{w}\b", R),
+                new($@"^\s*(?:(?:public|private|protected|static|async|override|abstract|readonly|get|set)\s+)+{w}\s*[(<]", R),
+                new($@"^\s+{w}\s*[(<]", R),
+            ],
+            ".java" =>
+            [
+                new($@"(?:class|interface|enum|record)\s+{w}\b", R),
+                new($@"\b[\w<>\[\]]+\s+{w}\s*\(", R),
+            ],
+            ".sql" or ".pkg" or ".pkb" =>
+            [
+                new($@"\bCREATE\b.*?\b(?:PROCEDURE|FUNCTION|PACKAGE(?:\s+BODY)?|TABLE|VIEW|TYPE)\b\s+(?:\w+\.)?{w}\b", RI),
+                new($@"^\s*(?:PROCEDURE|FUNCTION)\s+(?:\w+\.)?{w}\b", RI),
+            ],
+            _ => [],
+        };
+    }
+}
+
+/// <summary>
+/// Detects the language of a path (file or folder) using extension hints, marker
+/// files (.sln, tsconfig.json, pom.xml), and finally a file-count heuristic.
+/// </summary>
+public static class LanguageDetector
+{
+    private static readonly string[] TsExtensions = [".ts", ".tsx", ".js", ".jsx"];
+    private static readonly string[] JavaExtensions = [".java"];
+    private static readonly string[] CsExtensions = [".cs"];
+    private static readonly string[] SqlExtensions = [".sql", ".pkg", ".pkb"];
+
+    public static Language Detect(string path)
     {
         var lower = path.ToLowerInvariant();
 
@@ -123,392 +326,4 @@ public sealed class WorkspaceService : IWorkspaceService, IDisposable
         catch { /* best effort */ }
         return counts.OrderByDescending(kv => kv.Value).First().Key;
     }
-
-    private async Task<Workspace> LoadCSharpAsync(string path, CancellationToken ct)
-    {
-        EnsureMsBuildRegistered();
-
-        string slnPath;
-        if (File.Exists(path))
-        {
-            slnPath = path;
-        }
-        else
-        {
-            slnPath = Directory.GetFiles(path, "*.sln", SearchOption.TopDirectoryOnly).FirstOrDefault()
-                ?? Directory.GetFiles(path, "*.csproj", SearchOption.AllDirectories).FirstOrDefault()
-                ?? throw new FileNotFoundException($"No .sln or .csproj found in {path}");
-        }
-
-        _logger.LogInformation("Loading C# solution {Path}", slnPath);
-
-        var msWorkspace = MSBuildWorkspace.Create();
-        msWorkspace.WorkspaceFailed += (_, args) =>
-            _logger.LogWarning("Workspace warning: {Diagnostic}", args.Diagnostic.Message);
-
-        Solution solution;
-        if (slnPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
-            solution = await msWorkspace.OpenSolutionAsync(slnPath, cancellationToken: ct);
-        else
-        {
-            var project = await msWorkspace.OpenProjectAsync(slnPath, cancellationToken: ct);
-            solution = project.Solution;
-        }
-
-        var projects = new List<ProjectNode>();
-        foreach (var project in solution.Projects.OrderBy(p => p.Name))
-        {
-            var files = new List<FileNode>();
-            foreach (var doc in project.Documents.OrderBy(d => d.FilePath))
-            {
-                if (string.IsNullOrEmpty(doc.FilePath) || !File.Exists(doc.FilePath)) continue;
-                var info = new FileInfo(doc.FilePath);
-                var lineCount = 0;
-                try { lineCount = File.ReadLines(doc.FilePath).Count(); } catch { }
-                files.Add(new FileNode(
-                    AbsolutePath: doc.FilePath,
-                    RelativePath: GetRelativePath(slnPath, doc.FilePath),
-                    FileName: Path.GetFileName(doc.FilePath),
-                    LineCount: lineCount,
-                    SizeBytes: info.Length
-                ));
-            }
-            projects.Add(new ProjectNode(Name: project.Name, Path: project.FilePath ?? "", Files: files));
-        }
-
-        var workspaceId = Guid.NewGuid().ToString("N")[..12];
-        var workspace = new Workspace(
-            Id: workspaceId,
-            ProjectPath: slnPath,
-            ProjectName: Path.GetFileNameWithoutExtension(slnPath),
-            Projects: projects,
-            LoadedAt: DateTime.UtcNow,
-            Language: Language.CSharp,
-            RootFolder: Path.GetDirectoryName(slnPath),
-            EntryFile: slnPath
-        );
-        _workspaces[workspaceId] = new LoadedWorkspace(workspace, msWorkspace, solution);
-        TouchLru(workspaceId);
-        _logger.LogInformation("Loaded {ProjectCount} projects, {FileCount} files in workspace {Id}",
-            projects.Count, projects.Sum(p => p.Files.Count), workspaceId);
-        return workspace;
-    }
-
-    private async Task<Workspace> ScanFilesAsync(string path, Language language, CancellationToken ct)
-    {
-        var rootDir = File.Exists(path) ? Path.GetDirectoryName(path)! : path;
-        if (!Directory.Exists(rootDir))
-            throw new DirectoryNotFoundException($"Directory not found: {rootDir}");
-
-        var extensions = language switch
-        {
-            Language.Java => JavaExtensions,
-            Language.Sql  => SqlExtensions,
-            _             => TsExtensions,
-        };
-        var excludeDirs = language == Language.Java ? JavaExcludeDirs : TsExcludeDirs;
-        var excludePatterns = language == Language.TypeScript ? TsExcludePatterns : [];
-
-        _logger.LogInformation("Scanning {Root} for {Language} files", rootDir, language);
-
-        var allFiles = Directory.EnumerateFiles(rootDir, "*.*", SearchOption.AllDirectories)
-            .Where(f =>
-            {
-                var ext = Path.GetExtension(f).ToLowerInvariant();
-                if (!extensions.Contains(ext)) return false;
-                if (excludePatterns.Any(p => f.EndsWith(p, StringComparison.OrdinalIgnoreCase))) return false;
-                var parts = f.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
-                return !excludeDirs.Any(ex => parts.Any(p => p.Equals(ex, StringComparison.OrdinalIgnoreCase)));
-            })
-            .OrderBy(f => f)
-            .ToList();
-
-        var groups = allFiles
-            .GroupBy(f =>
-            {
-                var rel = Path.GetRelativePath(rootDir, f);
-                var parts = rel.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
-                return parts.Length > 1 ? parts[0] : ".";
-            })
-            .OrderBy(g => g.Key)
-            .ToList();
-
-        var projects = new List<ProjectNode>();
-        foreach (var group in groups)
-        {
-            var fileNodes = new List<FileNode>();
-            foreach (var filePath in group)
-            {
-                ct.ThrowIfCancellationRequested();
-                var info = new FileInfo(filePath);
-                var lineCount = 0;
-                try { lineCount = await Task.Run(() => File.ReadLines(filePath).Count(), ct); } catch { }
-                fileNodes.Add(new FileNode(
-                    AbsolutePath: filePath,
-                    RelativePath: Path.GetRelativePath(rootDir, filePath),
-                    FileName: Path.GetFileName(filePath),
-                    LineCount: lineCount,
-                    SizeBytes: info.Length
-                ));
-            }
-            var projectName = group.Key == "."
-                ? Path.GetFileName(rootDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
-                : group.Key;
-            projects.Add(new ProjectNode(
-                Name: projectName,
-                Path: group.Key == "." ? rootDir : Path.Combine(rootDir, group.Key),
-                Files: fileNodes
-            ));
-        }
-
-        var workspaceId = Guid.NewGuid().ToString("N")[..12];
-        var workspace = new Workspace(
-            Id: workspaceId,
-            ProjectPath: path,
-            ProjectName: Path.GetFileName(rootDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
-            Projects: projects,
-            LoadedAt: DateTime.UtcNow,
-            Language: language,
-            RootFolder: rootDir,
-            EntryFile: File.Exists(path) ? path : null
-        );
-        _workspaces[workspaceId] = new LoadedWorkspace(workspace, null, null);
-        TouchLru(workspaceId);
-        _logger.LogInformation("Scanned {FileCount} {Language} files in workspace {Id}",
-            projects.Sum(p => p.Files.Count), language, workspaceId);
-        return workspace;
-    }
-
-    public Workspace? GetWorkspace(string workspaceId) =>
-        _workspaces.TryGetValue(workspaceId, out var loaded) ? loaded.Workspace : null;
-
-    public Solution? GetRoslynSolution(string workspaceId) =>
-        _workspaces.TryGetValue(workspaceId, out var loaded) ? loaded.Solution : null;
-
-    public async Task<string> ReadFileAsync(string workspaceId, string path, CancellationToken ct = default)
-    {
-        var ws = GetWorkspace(workspaceId) ?? throw new InvalidOperationException("Workspace not loaded");
-        var rootDir = ws.RootFolder ?? throw new InvalidOperationException("Workspace has no resolved root folder.");
-
-        var absolutePath = Path.IsPathRooted(path) ? path : Path.Combine(rootDir, path);
-
-        if (!PathSafety.IsInside(absolutePath, rootDir))
-            throw new UnauthorizedAccessException("Path is outside workspace root.");
-
-        var resolved = Path.GetFullPath(absolutePath);
-        if (!File.Exists(resolved))
-            throw new FileNotFoundException($"File not found: {resolved}");
-
-        return await File.ReadAllTextAsync(resolved, ct);
-    }
-
-    private static string GetRelativePath(string basePath, string filePath)
-    {
-        var baseDir = Directory.Exists(basePath) ? basePath : Path.GetDirectoryName(basePath);
-        if (string.IsNullOrEmpty(baseDir)) return filePath;
-        try { return Path.GetRelativePath(baseDir, filePath); }
-        catch { return filePath; }
-    }
-
-    private static void EnsureMsBuildRegistered()
-    {
-        if (_msbuildRegistered) return;
-        lock (_msbuildLock)
-        {
-            if (_msbuildRegistered) return;
-            if (!MSBuildLocator.IsRegistered) MSBuildLocator.RegisterDefaults();
-            _msbuildRegistered = true;
-        }
-    }
-
-    public async Task<DefinitionLocation?> FindDefinitionAsync(
-        string workspaceId, string filePath, int line, int character, CancellationToken ct = default)
-    {
-        var ext = Path.GetExtension(filePath).ToLowerInvariant();
-
-        if (ext == ".cs")
-            return await FindDefinitionRoslynAsync(workspaceId, filePath, line, character, ct);
-
-        // For all other supported languages: read the word from source then text-search.
-        if (!File.Exists(filePath)) return null;
-        var fileContent = await File.ReadAllTextAsync(filePath, ct);
-        var fileLines = fileContent.Split('\n');
-        var lineIndex = line - 1;
-        if (lineIndex < 0 || lineIndex >= fileLines.Length) return null;
-        var word = ExtractWordFromLine(fileLines[lineIndex], character);
-        if (word == null) return null;
-
-        return await FindDefinitionByTextAsync(workspaceId, filePath, word, ext, ct);
-    }
-
-    private async Task<DefinitionLocation?> FindDefinitionRoslynAsync(
-        string workspaceId, string filePath, int line, int character, CancellationToken ct)
-    {
-        var solution = GetRoslynSolution(workspaceId);
-        if (solution == null) return null;
-
-        var document = solution.Projects
-            .SelectMany(p => p.Documents)
-            .FirstOrDefault(d => string.Equals(d.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
-
-        if (document == null) return null;
-
-        var sourceText = await document.GetTextAsync(ct);
-        var lineIndex = line - 1;
-        if (lineIndex < 0 || lineIndex >= sourceText.Lines.Count) return null;
-
-        var lineSpanLength = sourceText.Lines[lineIndex].Span.Length;
-        var position = sourceText.Lines[lineIndex].Start + Math.Min(character, lineSpanLength);
-
-        var root = await document.GetSyntaxRootAsync(ct);
-        var model = await document.GetSemanticModelAsync(ct);
-        if (root == null || model == null) return null;
-
-        var token = root.FindToken(position);
-        var node = token.Parent;
-        if (node == null) return null;
-
-        var symbol = model.GetSymbolInfo(node).Symbol
-            ?? model.GetSymbolInfo(node).CandidateSymbols.FirstOrDefault()
-            ?? model.GetDeclaredSymbol(node);
-
-        if (symbol == null) return null;
-
-        var defLocation = symbol.OriginalDefinition.Locations
-            .FirstOrDefault(l => l.IsInSource && l.SourceTree != null);
-
-        if (defLocation == null) return null;
-
-        var defSpan = defLocation.GetLineSpan();
-        return new DefinitionLocation(
-            FilePath: defLocation.SourceTree!.FilePath,
-            Line: defSpan.StartLinePosition.Line + 1,
-            Character: defSpan.StartLinePosition.Character,
-            SymbolName: symbol.Name
-        );
-    }
-
-    private async Task<DefinitionLocation?> FindDefinitionByTextAsync(
-        string workspaceId, string requestingFilePath, string word, string ext, CancellationToken ct)
-    {
-        var ws = GetWorkspace(workspaceId);
-        if (ws == null) return null;
-
-        var patterns = DefinitionPatterns(ext, word);
-        if (patterns.Count == 0) return null;
-
-        var groupExts = SameGroupExtensions(ext);
-
-        // Search other files first; fall back to the requesting file so local definitions work too.
-        var candidates = ws.Projects
-            .SelectMany(p => p.Files)
-            .Where(f => groupExts.Any(e => f.AbsolutePath.EndsWith(e, StringComparison.OrdinalIgnoreCase)))
-            .OrderBy(f => string.Equals(f.AbsolutePath, requestingFilePath, StringComparison.OrdinalIgnoreCase) ? 1 : 0)
-            .ToList();
-
-        foreach (var file in candidates)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                var content = await File.ReadAllTextAsync(file.AbsolutePath, ct);
-                var lines = content.Split('\n');
-                for (var i = 0; i < lines.Length; i++)
-                {
-                    foreach (var pattern in patterns)
-                    {
-                        if (pattern.IsMatch(lines[i]))
-                        {
-                            return new DefinitionLocation(
-                                FilePath: file.AbsolutePath,
-                                Line: i + 1,
-                                Character: 0,
-                                SymbolName: word
-                            );
-                        }
-                    }
-                }
-            }
-            catch { /* skip unreadable files */ }
-        }
-
-        return null;
-    }
-
-    private static string? ExtractWordFromLine(string line, int character)
-    {
-        if (character >= line.Length) return null;
-        static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
-        var pos = character;
-        if (!IsWordChar(line[pos]))
-        {
-            if (pos > 0 && IsWordChar(line[pos - 1])) pos--;
-            else return null;
-        }
-        var start = pos;
-        var end = pos;
-        while (start > 0 && IsWordChar(line[start - 1])) start--;
-        while (end < line.Length - 1 && IsWordChar(line[end + 1])) end++;
-        var word = line[start..(end + 1)];
-        return word.Length > 0 ? word : null;
-    }
-
-    private static IReadOnlyList<string> SameGroupExtensions(string ext) => ext switch
-    {
-        ".ts" or ".tsx" or ".js" or ".jsx" => [".ts", ".tsx", ".js", ".jsx"],
-        ".java"                             => [".java"],
-        ".sql" or ".pkg" or ".pkb"         => [".sql", ".pkg", ".pkb"],
-        _                                   => [ext],
-    };
-
-    private static IReadOnlyList<Regex> DefinitionPatterns(string ext, string word)
-    {
-        var w = Regex.Escape(word);
-        const RegexOptions R = RegexOptions.Compiled;
-        const RegexOptions RI = RegexOptions.Compiled | RegexOptions.IgnoreCase;
-
-        return ext switch
-        {
-            ".ts" or ".tsx" or ".js" or ".jsx" =>
-            [
-                // function declaration: function myFn( / async function myFn(
-                new($@"(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+{w}\s*[(<]", R),
-                // const/let/var: const myFn = / const myFn:
-                new($@"(?:export\s+)?(?:const|let|var)\s+{w}\s*[:=]", R),
-                // class / interface / type / enum
-                new($@"(?:export\s+)?(?:abstract\s+)?(?:class|interface|type|enum)\s+{w}\b", R),
-                // class method with access modifier: public async myMethod(
-                new($@"^\s*(?:(?:public|private|protected|static|async|override|abstract|readonly|get|set)\s+)+{w}\s*[(<]", R),
-                // bare method/property shorthand inside a class body
-                new($@"^\s+{w}\s*[(<]", R),
-            ],
-
-            ".java" =>
-            [
-                // class / interface / enum / record
-                new($@"(?:class|interface|enum|record)\s+{w}\b", R),
-                // method: any return type followed by methodName(
-                new($@"\b[\w<>\[\]]+\s+{w}\s*\(", R),
-            ],
-
-            ".sql" or ".pkg" or ".pkb" =>
-            [
-                // CREATE [OR REPLACE] PROCEDURE/FUNCTION/TABLE/VIEW/PACKAGE [BODY] [schema.]name
-                new($@"\bCREATE\b.*?\b(?:PROCEDURE|FUNCTION|PACKAGE(?:\s+BODY)?|TABLE|VIEW|TYPE)\b\s+(?:\w+\.)?{w}\b", RI),
-                // package-body inline declaration: PROCEDURE name or FUNCTION name at start of line
-                new($@"^\s*(?:PROCEDURE|FUNCTION)\s+(?:\w+\.)?{w}\b", RI),
-            ],
-
-            _ => [],
-        };
-    }
-
-    public void Dispose()
-    {
-        foreach (var loaded in _workspaces.Values)
-            loaded.MsWorkspace?.Dispose();
-        _workspaces.Clear();
-    }
-
-    private record LoadedWorkspace(Workspace Workspace, MSBuildWorkspace? MsWorkspace, Solution? Solution);
 }

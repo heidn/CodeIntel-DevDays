@@ -9,12 +9,17 @@
     <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
     <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
     <RootNamespace>CodeIntel.Server</RootNamespace>
+    <!-- vs-threading analyzers come in via StreamJsonRpc. VSTHRD011 (Lazy<Task<T>>
+         deadlock warning) is aimed at VS extensions running on a SyncContext; in
+         ASP.NET Core where there's no UI thread, Lazy<Task<T>> works fine and we
+         use it deliberately for SQLite init + LSP session start. -->
+    <NoWarn>$(NoWarn);VSTHRD011</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- LLM inference -->
     <PackageReference Include="LLamaSharp" Version="0.27.0" />
-    <PackageReference Include="LLamaSharp.Backend.Cpu"    Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
     <PackageReference Include="LLamaSharp.Backend.Vulkan" Version="0.27.0" />
     <!-- CUDA: uncomment + remove Vulkan when an NVIDIA GPU is present -->
     <!-- <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" /> -->
@@ -30,6 +35,22 @@
 
     <!-- Persistence -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+
+    <!-- LSP client for the TypeScript backend (B1). Talks JSON-RPC over stdio to
+         typescript-language-server. Microsoft's StreamJsonRpc handles Content-Length
+         framing, request/response correlation, and notification dispatch. -->
+    <PackageReference Include="StreamJsonRpc" Version="2.19.27" />
+    <!-- Transitive of StreamJsonRpc — pin to patched 2.5.198 to silence NU1902
+         (GHSA-4qm4-8hg2-g2xm). Stay on 2.x; 3.x is a breaking-change line. -->
+    <PackageReference Include="MessagePack" Version="2.5.198" />
+
+    <!-- Transitive of Microsoft.CodeAnalysis.Workspaces.MSBuild / Microsoft.Build.Locator —
+         pin patched 17.14.x to silence NU1903 (GHSA-h4j7-5rxr-p4wc, GHSA-w3q9-fxm7-j8fq).
+         Stay on 17.x; 18.x is a major-version jump. -->
+    <PackageReference Include="Microsoft.Build" Version="17.14.28" />
+    <PackageReference Include="Microsoft.Build.Framework" Version="17.14.28" />
+    <PackageReference Include="Microsoft.Build.Tasks.Core" Version="17.14.28" />
+    <PackageReference Include="Microsoft.Build.Utilities.Core" Version="17.14.28" />
 
     <!-- PL/SQL grammar (B2). Antlr4BuildTasks runs the ANTLR jar at build time and
          emits C# from any .g4 in the project. Antlr4.Runtime.Standard ships the runtime
