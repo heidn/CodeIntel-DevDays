@@ -239,6 +239,12 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 8. **SQLite path resolution** — `Data:DatabasePath` is resolved relative to `ContentRootPath`, not CWD. Running tests from elsewhere will create a fresh DB in that directory; tests use a tempfile to avoid cross-contamination.
 9. **Rate limiter is per IP, not per user** — on shared infra (NAT, internal proxy, OpenShift Service mesh) one user can starve everyone behind the same source IP. Raise `Analysis:RateLimitRunsPerMinute` or partition on a header when auth lands.
 10. **Result cache TTL is per-row, not per-content** — editing `appsettings.json` to lower `ResultCacheTtlHours` does **not** evict existing rows; they're only filtered on lookup. Delete `data/codeintel.db` (or the `result_cache` table) for an immediate flush.
+11. **Large files are silently truncated — most of the file never gets analyzed.** `MaxContextTokens: 5000` at `TokensPerCharEstimate: 0.25` means only ~20 KB (~400 lines) of any file fits the budget; the rest is dropped with a `// ... [truncated] ...` tail. A 4339-line file gets ~10% coverage, which explains suspiciously low finding counts. Check server logs for `"Context truncated"` to confirm. Additionally, `MaxResponseTokens: 1024` can cut the model off mid-output before it emits all its findings. **Recommended overrides for the ZBook (14B model, GPU layers):**
+    ```json
+    "Llm":     { "ContextSize": 16384, "MaxResponseTokens": 2048 },
+    "Analysis": { "MaxContextTokens": 12000 }
+    ```
+    After changing these, delete `data/codeintel.db` so the prior truncated result isn't replayed from cache.
 
 ---
 
