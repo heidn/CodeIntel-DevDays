@@ -44,7 +44,17 @@ public static class FindingsAggregator
                 ? $"\n\n_Also reported at line(s) {string.Join(", ", extraLines)} ({members.Count} occurrences collapsed)._"
                 : $"\n\n_{members.Count} similar reports collapsed._";
 
-            collapsed.Add(primary with { Description = primary.Description + hint });
+            // Promote to High if any member of the duplicate group was emitted with High confidence —
+            // multiple sightings, one of them definitive, beats a single hedged one.
+            var bestConfidence = members.Any(m => m.Finding.Confidence == Confidence.High)
+                ? Confidence.High
+                : Confidence.Low;
+
+            collapsed.Add(primary with
+            {
+                Description = primary.Description + hint,
+                Confidence = bestConfidence,
+            });
         }
 
         return collapsed;

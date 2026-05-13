@@ -108,6 +108,15 @@ public sealed class CodeIntelDb
                 created_at INTEGER NOT NULL,
                 FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS metrics_cache (
+                cache_key TEXT PRIMARY KEY NOT NULL,
+                workspace_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                computed_at INTEGER NOT NULL,
+                result_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_metrics_workspace ON metrics_cache(workspace_id, computed_at DESC);
             """;
         await cmd.ExecuteNonQueryAsync();
         _logger.LogInformation("SQLite schema initialized at {Conn}", _connectionString);

@@ -4,10 +4,15 @@ import CloseIcon from '@mui/icons-material/Close';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import SubjectIcon from '@mui/icons-material/SubjectOutlined';
 import AccountTreeIcon from '@mui/icons-material/AccountTreeOutlined';
+import BarChartIcon from '@mui/icons-material/BarChartOutlined';
+import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutlined';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import MyLocationIcon from '@mui/icons-material/MyLocation';
 import PromptSelector from './PromptSelector';
 import ResultsView from './ResultsView';
 import TracePanel from './TracePanel';
 import TraceResultsView from './TraceResultsView';
+import MetricsPanel from './MetricsPanel';
 import FilePreviewPanel from './FilePreviewPanel';
 import WelcomePanel from './WelcomePanel';
 import { useWorkspaceStore } from '../stores/workspaceStore';
@@ -20,10 +25,13 @@ const MIN_PREVIEW_WIDTH = 250;
 const MIN_ANALYSIS_WIDTH = 320;
 
 export default function AnalysisPanel() {
-  const workspace     = useWorkspaceStore((s) => s.workspace);
-  const previewedFile = useWorkspaceStore((s) => s.previewedFile);
-  const paneMode      = useWorkspaceStore((s) => s.paneMode);
-  const setPaneMode   = useWorkspaceStore((s) => s.setPaneMode);
+  const workspace                = useWorkspaceStore((s) => s.workspace);
+  const previewedFile            = useWorkspaceStore((s) => s.previewedFile);
+  const paneMode                 = useWorkspaceStore((s) => s.paneMode);
+  const setPaneMode              = useWorkspaceStore((s) => s.setPaneMode);
+  const selectedFiles            = useWorkspaceStore((s) => s.selectedFiles);
+  const toggleFile               = useWorkspaceStore((s) => s.toggleFile);
+  const setSolutionPanelCollapsed = useWorkspaceStore((s) => s.setSolutionPanelCollapsed);
   const [openFileTabs, setOpenFileTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab]       = useState<string | null>(null);
   const [previewWidth, setPreviewWidth] = useState(560);
@@ -142,6 +150,9 @@ export default function AnalysisPanel() {
                 <ToggleButton value="trace">
                   <AccountTreeIcon sx={{ fontSize: 14 }} /> Trace
                 </ToggleButton>
+                <ToggleButton value="metrics">
+                  <BarChartIcon sx={{ fontSize: 14 }} /> Metrics
+                </ToggleButton>
               </ToggleButtonGroup>
             </Stack>
 
@@ -149,9 +160,9 @@ export default function AnalysisPanel() {
               sx={{ flex: 1, minHeight: 0 }}
               divider={<Box sx={{ borderBottom: '1px solid', borderColor: 'divider' }} />}
             >
-              {paneMode === 'analysis'
-                ? (<><PromptSelector /><ResultsView /></>)
-                : (<><TracePanel /><TraceResultsView /></>)}
+              {paneMode === 'analysis' && (<><PromptSelector /><ResultsView /></>)}
+              {paneMode === 'trace'    && (<><TracePanel /><TraceResultsView /></>)}
+              {paneMode === 'metrics'  && (<MetricsPanel />)}
             </Stack>
           </>
         )}
@@ -225,27 +236,58 @@ export default function AnalysisPanel() {
                 minHeight: 0,
               }}
             >
-              {/* Path breadcrumb */}
+              {/* Path breadcrumb + file actions */}
               <Box
                 sx={{
-                  px: 2,
-                  py: 0.75,
+                  px: 1.5,
+                  py: 0.5,
                   borderBottom: '1px solid',
                   borderColor: 'divider',
                   bgcolor: 'background.paper',
                   flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
                 }}
               >
                 <Typography
                   variant="caption"
+                  noWrap
                   sx={{
                     fontFamily: '"JetBrains Mono", monospace',
                     color: 'text.secondary',
                     fontSize: '0.7rem',
+                    flex: 1,
+                    minWidth: 0,
                   }}
                 >
                   {path.replace(/\\/g, '/')}
                 </Typography>
+                <Tooltip title={selectedFiles.has(path) ? 'Remove from analysis selection' : 'Add to analysis selection'} placement="top">
+                  <IconButton
+                    size="small"
+                    onClick={() => toggleFile(path)}
+                    sx={{
+                      p: 0.25,
+                      flexShrink: 0,
+                      color: selectedFiles.has(path) ? 'primary.main' : 'text.disabled',
+                      '&:hover': { color: 'primary.main' },
+                    }}
+                  >
+                    {selectedFiles.has(path)
+                      ? <CheckCircleIcon sx={{ fontSize: 16 }} />
+                      : <AddCircleOutlineIcon sx={{ fontSize: 16 }} />}
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Reveal in file tree" placement="top">
+                  <IconButton
+                    size="small"
+                    onClick={() => setSolutionPanelCollapsed(false)}
+                    sx={{ p: 0.25, flexShrink: 0, color: 'text.disabled', '&:hover': { color: 'text.primary' } }}
+                  >
+                    <MyLocationIcon sx={{ fontSize: 16 }} />
+                  </IconButton>
+                </Tooltip>
               </Box>
 
               {activeWsId && (

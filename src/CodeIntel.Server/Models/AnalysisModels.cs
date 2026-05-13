@@ -15,6 +15,12 @@ public enum Severity
     DeadCode
 }
 
+public enum Confidence
+{
+    High,
+    Low
+}
+
 public record PinnedSnippet(
     string AbsolutePath,
     int StartLine,
@@ -38,7 +44,8 @@ public record Finding(
     string Description,
     string? FilePath,
     int? LineNumber,
-    string? CodeSnippet
+    string? CodeSnippet,
+    Confidence Confidence = Confidence.High
 );
 
 public enum ContextRequestType

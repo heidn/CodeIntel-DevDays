@@ -59,6 +59,10 @@ qualifiedName
     ;
 
 // Anything we don't care about — keeps the parser tolerant of unknown syntax.
+// The new structural tokens (PROCEDURE, FUNCTION, CURSOR, EXCEPTION, WHEN, OTHERS,
+// THEN, BEGIN_KW, END_KW, NULL_KW, IS_KW, AS_KW, RETURN_KW) are consumed here so the
+// object-reference parser stays tolerant; structural metrics are computed by a
+// separate lexer-token-stream walker that inspects these tokens directly.
 anyToken
     : IDENT
     | QUOTED_IDENT
@@ -66,6 +70,27 @@ anyToken
     | STRING
     | PUNCT
     | KEYWORD_OTHER
+    | PROCEDURE
+    | FUNCTION
+    | CURSOR
+    | EXCEPTION
+    | WHEN
+    | OTHERS
+    | THEN
+    | BEGIN_KW
+    | END_KW
+    | NULL_KW
+    | IS_KW
+    | AS_KW
+    | RETURN_KW
+    | IF_KW
+    | ELSIF_KW
+    | LOOP_KW
+    | WHILE_KW
+    | FOR_KW
+    | CASE_KW
+    | AND_KW
+    | OR_KW
     | '.'
     | '('
     | ')'
@@ -85,6 +110,33 @@ EXECUTE : E X E C U T E;
 EXEC    : E X E C;
 CALL    : C A L L;
 
+// Structural tokens used by the metrics analyzer's token-stream walker. The
+// suffixed names (BEGIN_KW etc.) avoid colliding with ANTLR-reserved or
+// commonly-used identifiers in tooling.
+PROCEDURE : P R O C E D U R E ;
+FUNCTION  : F U N C T I O N ;
+CURSOR    : C U R S O R ;
+EXCEPTION : E X C E P T I O N ;
+WHEN      : W H E N ;
+OTHERS    : O T H E R S ;
+THEN      : T H E N ;
+BEGIN_KW  : B E G I N ;
+END_KW    : E N D ;
+NULL_KW   : N U L L ;
+IS_KW     : I S ;
+AS_KW     : A S ;
+RETURN_KW : R E T U R N ;
+
+// Branching tokens used by the cyclomatic-complexity counter.
+IF_KW     : I F ;
+ELSIF_KW  : E L S I F ;
+LOOP_KW   : L O O P ;
+WHILE_KW  : W H I L E ;
+FOR_KW    : F O R ;
+CASE_KW   : C A S E ;
+AND_KW    : A N D ;
+OR_KW     : O R ;
+
 KEYWORD_OTHER
     : (S E L E C T)
     | (I N S E R T)
@@ -92,8 +144,6 @@ KEYWORD_OTHER
     | (G R O U P)
     | (O R D E R)
     | (B Y)
-    | (B E G I N)
-    | (E N D)
     ;
 
 // Standard Oracle identifiers ($ and # are legal).

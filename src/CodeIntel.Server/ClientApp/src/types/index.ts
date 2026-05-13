@@ -1,4 +1,5 @@
 export type Severity = 'info' | 'suggestion' | 'warning' | 'bug' | 'deadCode';
+export type Confidence = 'high' | 'low';
 
 export interface PinnedSnippet {
   absolutePath: string;
@@ -16,6 +17,7 @@ export interface Finding {
   filePath: string | null;
   lineNumber: number | null;
   codeSnippet: string | null;
+  confidence: Confidence;
 }
 
 export interface AnalysisResult {
@@ -169,4 +171,52 @@ export interface TraceResult {
   truncated:            boolean;
   duration:             string;
   reportPath:           string | null;
+}
+
+// ── Metrics ────────────────────────────────────────────────────────────────
+
+export interface MethodMetric {
+  name:                     string;
+  container:                string;
+  startLine:                number;
+  endLine:                  number;
+  lengthLines:              number;
+  cyclomaticComplexity:     number;
+  nestingDepth:             number;
+  parameterCount:           number;
+  emptyCatchCount:          number;
+  syncOverAsyncCount:       number;
+  cursorDeclarationCount:   number | null;
+  exceptionHandlerCount:    number | null;
+  swallowedWhenOthersCount: number | null;
+  flags:                    string[];
+}
+
+export interface FileMetricsResult {
+  filePath:     string;
+  relativePath: string;
+  language:     Language;
+  totalLines:   number;
+  methods:      MethodMetric[];
+  errorMessage: string | null;
+}
+
+export interface MetricsSummary {
+  fileCount:                number;
+  methodCount:              number;
+  highComplexityCount:      number;
+  longMethodCount:          number;
+  emptyCatchCount:          number;
+  syncOverAsyncCount:       number;
+  cursorTotal:              number;
+  swallowedWhenOthersTotal: number;
+}
+
+export interface WorkspaceMetricsResult {
+  workspaceId:  string;
+  computedAt:   string;
+  language:     Language;
+  contentHash:  string;
+  summary:      MetricsSummary;
+  files:        FileMetricsResult[];
 }

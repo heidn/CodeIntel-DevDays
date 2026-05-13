@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Box, Checkbox, Typography, Stack } from '@mui/material';
 import FolderIcon from '@mui/icons-material/FolderOutlined';
 import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFileOutlined';
@@ -92,6 +92,15 @@ export default function FileTree({ workspace }: Props) {
   const selectFiles      = useWorkspaceStore((s) => s.selectFiles);
   const setPreviewedFile = useWorkspaceStore((s) => s.setPreviewedFile);
 
+  const prevPreviewedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!previewedFile || previewedFile === prevPreviewedRef.current) return;
+    prevPreviewedRef.current = previewedFile;
+    const safeId = `file-tree-item-${previewedFile.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const el = document.getElementById(safeId);
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [previewedFile]);
+
   const projectTrees = useMemo(
     () => workspace.projects.map((p) => ({ project: p, tree: buildFolderTree(p) })),
     [workspace],
@@ -146,6 +155,7 @@ export default function FileTree({ workspace }: Props) {
         itemId={file.absolutePath}
         label={
           <Stack
+            id={`file-tree-item-${file.absolutePath.replace(/[^a-zA-Z0-9]/g, '_')}`}
             direction="row"
             spacing={0.5}
             sx={{

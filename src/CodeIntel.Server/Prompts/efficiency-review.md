@@ -37,9 +37,82 @@ Reject patterns that *might* be slow but lack a specific reason:
 - `suggestion` — a concrete pattern likely to be slow, with named line and predicate / shape.
 - `warning` — the pattern almost always hurts (e.g., row-by-row over thousands of rows; cartesian join). Still requires named evidence.
 
+## Confidence
+
+Every `<finding>` MUST include a `confidence` field:
+
+- `"high"` — the pattern is a well-known plan-killer (implicit type conversion, function on indexed column, cartesian join, COUNT(\*) for existence), and the predicate / shape is visible in the file.
+- `"low"` — the pattern's impact depends on cardinality, index existence, or data distribution the analyzed code doesn't reveal (e.g., a row-by-row loop is fine for a handful of rows; SELECT * is fine if downstream uses every column). Emit so Copilot can confirm against EXPLAIN PLAN.
+
 ## Output rules
 
 - Each `description` names the pattern, the exact predicate or shape, and the cost (e.g., "blocks index use", "n+1 round trips", "extra sort").
 - Each `codeSnippet` quotes the concrete query / predicate.
 - One finding per pattern; do not split.
 - When you have nothing more to report, write `<done />` on its own line.
+
+## Examples
+
+### Good finding (emit, high confidence)
+
+```
+<finding>{
+  "severity": "warning",
+  "confidence": "high",
+  "title": "Implicit type conversion blocks index use on ORDERS.id",
+  "description": "Line 33 filters WHERE id = '12345' — id is NUMBER per the DDL, so Oracle wraps the column in TO_CHAR for the comparison, disabling the PK index. Pass a numeric literal or a bound NUMBER variable.",
+  "filePath": "lookup_order.sql",
+  "lineNumber": 33,
+  "codeSnippet": "SELECT * FROM ORDERS WHERE id = '12345';"
+}</finding>
+```
+
+### Good finding (emit, high confidence)
+
+```
+<finding>{
+  "severity": "suggestion",
+  "confidence": "high",
+  "title": "COUNT(*) used to test existence",
+  "description": "Line 58 uses SELECT COUNT(*) INTO v_count FROM ORDERS WHERE customer_id = p_cid; v_count > 0 to test for existence. This scans matching rows; rewrite as WHERE EXISTS (...) which short-circuits on the first hit.",
+  "filePath": "customer_pkg.pkb",
+  "lineNumber": 58,
+  "codeSnippet": "SELECT COUNT(*) INTO v_count FROM ORDERS WHERE customer_id = p_cid;"
+}</finding>
+```
+
+### Good finding (emit, low confidence)
+
+```
+<finding>{
+  "severity": "suggestion",
+  "confidence": "low",
+  "title": "Row-by-row UPDATE inside cursor loop",
+  "description": "Lines 90–98 fetch rows from c_orders and UPDATE ORDER_HEADER per row. If the cursor result set is more than a few hundred rows, replace with FORALL + BULK COLLECT or a single UPDATE ... WHERE id IN (...). Impact depends on typical batch size — Copilot to confirm.",
+  "filePath": "batch_update.sql",
+  "lineNumber": 90,
+  "codeSnippet": "FOR rec IN c_orders LOOP UPDATE ORDER_HEADER SET status = 'X' WHERE id = rec.id; END LOOP;"
+}</finding>
+```
+
+### Rejected finding (do NOT emit)
+
+```
+<finding>{
+  "severity": "suggestion",
+  "title": "Consider adding an index"
+}</finding>
+```
+
+Why rejected: doesn't name the column, doesn't name the predicate that misses an index, doesn't say which query suffers. The downstream tool can't act on this.
+
+### Rejected finding (do NOT emit)
+
+```
+<finding>{
+  "severity": "warning",
+  "title": "This query could be slow on large data"
+}</finding>
+```
+
+Why rejected: true of almost every query. Not a signal.

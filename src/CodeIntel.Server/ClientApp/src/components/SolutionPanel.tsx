@@ -28,9 +28,11 @@ export default function SolutionPanel() {
   const selectedFiles = useWorkspaceStore((s) => s.selectedFiles);
   const clearSelection = useWorkspaceStore((s) => s.clearSelection);
 
+  const collapsed = useWorkspaceStore((s) => s.solutionPanelCollapsed);
+  const setCollapsed = useWorkspaceStore((s) => s.setSolutionPanelCollapsed);
+
   const [path, setPath] = useState('');
   const [browseOpen, setBrowseOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
 
   const loadMutation = useMutation({
     mutationFn: loadSolution,

@@ -52,6 +52,14 @@ public class ReportGenerator : IReportGenerator
         }
         else
         {
+            var lowCount = result.Findings.Count(f => f.Confidence == Confidence.Low);
+            if (lowCount > 0)
+            {
+                var highCount = result.Findings.Count - lowCount;
+                sb.AppendLine($"> {highCount} high-confidence · {lowCount} low-confidence. Low-confidence findings need verification before action.");
+                sb.AppendLine();
+            }
+
             var bySeverity = result.Findings
                 .GroupBy(f => f.Severity)
                 .OrderBy(g => (int)g.Key);
@@ -62,7 +70,8 @@ public class ReportGenerator : IReportGenerator
                 sb.AppendLine();
                 foreach (var finding in group)
                 {
-                    sb.AppendLine($"#### {finding.Title}");
+                    var titleSuffix = finding.Confidence == Confidence.Low ? " _(low confidence)_" : "";
+                    sb.AppendLine($"#### {finding.Title}{titleSuffix}");
                     if (!string.IsNullOrWhiteSpace(finding.FilePath))
                     {
                         var loc = finding.LineNumber.HasValue

@@ -184,6 +184,7 @@ public class FindingStreamParser
 
             var severityStr = GetString(root, "severity") ?? "info";
             var severity = ParseSeverity(severityStr);
+            var confidence = ParseConfidence(GetString(root, "confidence"));
 
             var finding = new Finding(
                 Severity: severity,
@@ -191,7 +192,8 @@ public class FindingStreamParser
                 Description: GetString(root, "description") ?? "",
                 FilePath: GetString(root, "filePath"),
                 LineNumber: GetInt(root, "lineNumber"),
-                CodeSnippet: GetString(root, "codeSnippet")
+                CodeSnippet: GetString(root, "codeSnippet"),
+                Confidence: confidence
             );
             return (finding, null);
         }
@@ -229,6 +231,13 @@ public class FindingStreamParser
         "info" => Severity.Info,
         "deadcode" or "dead_code" or "dead-code" => Severity.DeadCode,
         _ => Severity.Info
+    };
+
+    // Default to High when the model omits the field — keeps old prompts / cached outputs working.
+    private static Confidence ParseConfidence(string? s) => (s ?? "").Trim().ToLowerInvariant() switch
+    {
+        "low" => Confidence.Low,
+        _ => Confidence.High,
     };
 
     private static ContextRequestType ParseContextRequestType(string s) => s.ToLowerInvariant() switch

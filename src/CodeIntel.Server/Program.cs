@@ -39,6 +39,9 @@ builder.Services.AddScoped<IAnalysisOrchestrator, InvestigationOrchestrator>();
 builder.Services.AddSingleton<ITraceResultStore, SqliteTraceResultStore>();
 builder.Services.AddScoped<ITraceWalker, TraceWalker>();
 builder.Services.AddScoped<ITraceOrchestrator, TraceOrchestrator>();
+builder.Services.AddSingleton<ICSharpMetricsAnalyzer, CSharpMetricsAnalyzer>();
+builder.Services.AddSingleton<IPlSqlMetricsAnalyzer, PlSqlMetricsAnalyzer>();
+builder.Services.AddScoped<IMetricsService, MetricsService>();
 
 // --- Web ---
 builder.Services.AddControllers()

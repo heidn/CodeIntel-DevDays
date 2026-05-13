@@ -41,4 +41,80 @@ For each finding:
 - Performance observations — that's the efficiency preset.
 - A category-is-absent finding — only emit rules you can point at.
 
+## Confidence
+
+Every `<finding>` MUST include a `confidence` field:
+
+- `"high"` — the rule is encoded in a single piece of DDL or a single literal comparison/raise (CHECK constraint, NOT NULL, an explicit `RAISE_APPLICATION_ERROR` with a clear message).
+- `"low"` — the rule is inferred from the *shape* of branching logic (e.g., a state-machine pattern across `UPDATE ... WHERE status = ...` statements), or from magic numbers whose business meaning isn't named.
+
+## Examples
+
+### Good finding (emit, high confidence — from DDL)
+
+```
+<finding>{
+  "severity": "info",
+  "confidence": "high",
+  "title": "Order status must be one of NEW, PAID, SHIPPED, CANCELLED",
+  "description": "The ORDERS table restricts status to four values via a CHECK constraint. Any other value is rejected at the database boundary regardless of which code path attempts the write.",
+  "filePath": "schema/orders.sql",
+  "lineNumber": 14,
+  "codeSnippet": "status VARCHAR2(10) CHECK (status IN ('NEW','PAID','SHIPPED','CANCELLED'))"
+}</finding>
+```
+
+### Good finding (emit, high confidence — from procedure)
+
+```
+<finding>{
+  "severity": "info",
+  "confidence": "high",
+  "title": "Refund requires order to be in PAID status",
+  "description": "Refunds are only permitted on orders currently in PAID status. The proc raises -20043 \"refund not allowed in current status\" otherwise.",
+  "filePath": "refund_pkg.pkb",
+  "lineNumber": 71,
+  "codeSnippet": "IF v_status <> 'PAID' THEN RAISE_APPLICATION_ERROR(-20043, 'refund not allowed in current status'); END IF;"
+}</finding>
+```
+
+### Good finding (emit, low confidence)
+
+```
+<finding>{
+  "severity": "info",
+  "confidence": "low",
+  "title": "Tax appears to be a flat 7% applied to subtotal",
+  "description": "calculate_tax multiplies subtotal by 0.07 at line 34. The literal 0.07 is not named, so this looks like a flat 7% tax rule but the jurisdiction/category gating isn't visible. Confirm with finance.",
+  "filePath": "pricing_pkg.pkb",
+  "lineNumber": 34,
+  "codeSnippet": "v_tax := v_subtotal * 0.07;"
+}</finding>
+```
+
+### Good finding (emit, warning — absent rule with a concrete target)
+
+```
+<finding>{
+  "severity": "warning",
+  "confidence": "high",
+  "title": "delete_customer is missing an authorization check",
+  "description": "delete_customer at line 12 unconditionally deletes the row. Comparable procedures (delete_order, delete_invoice) check is_admin(USER) first; this one does not.",
+  "filePath": "customer_pkg.pkb",
+  "lineNumber": 12,
+  "codeSnippet": "DELETE FROM CUSTOMERS WHERE id = p_customer_id;"
+}</finding>
+```
+
+### Rejected finding (do NOT emit)
+
+```
+<finding>{
+  "severity": "warning",
+  "title": "No business rules found about pricing"
+}</finding>
+```
+
+Why rejected: category-is-absent findings are noise. Only emit a `warning` when a specific, named operation lacks a rule you can point to a peer operation having.
+
 When you have nothing more to report, write `<done />` on its own line.

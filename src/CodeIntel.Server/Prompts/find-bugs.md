@@ -45,9 +45,69 @@ Before emitting any finding, scan the surrounding ~5 lines. Reject the finding i
 - `bug` — the failure occurs in the code as written, on a path you can describe.
 - `warning` — the failure path is real but depends on caller misuse or external state not shown. Still requires a named, concrete path.
 
+## Confidence
+
+Every `<finding>` MUST include a `confidence` field, either `"high"` or `"low"`:
+
+- `"high"` — you can quote the exact failing line AND describe the specific input/state that triggers the failure in one sentence with no hedging.
+- `"low"` — the shape of the problem is real but you can't fully prove the failing path from the code in front of you (e.g., the trigger lives in a caller you don't see, or the failure is conditional on configuration). Emit the finding anyway — Copilot will verify.
+
 ## Output rules
 
 - Each `description` must state the failure path in one sentence: *"When X happens at line N, Y throws Z."*
 - Each `codeSnippet` must contain the exact failing line, not scaffolding.
 - One finding per defect. Do not split.
 - When you have nothing more to report, write `<done />` on its own line.
+
+## Examples
+
+### Good finding (emit)
+
+```
+<finding>{
+  "severity": "bug",
+  "confidence": "high",
+  "title": "Null deref in OrderService.Submit when discount is null",
+  "description": "When order.Discount is null (legal per the constructor at line 12), line 47 calls discount.Code.ToUpper() and throws NullReferenceException before any validation runs.",
+  "filePath": "OrderService.cs",
+  "lineNumber": 47,
+  "codeSnippet": "var code = order.Discount.Code.ToUpper();"
+}</finding>
+```
+
+Why this is good: names the exact input (`order.Discount == null`), the exact line, the exact exception. No hedging.
+
+### Good finding (emit, lower confidence)
+
+```
+<finding>{
+  "severity": "warning",
+  "confidence": "low",
+  "title": "Possible socket exhaustion: HttpClient created per request",
+  "description": "ApiClient instantiates a new HttpClient on line 23 inside SendAsync, which is called once per inbound request. Under sustained load this exhausts ephemeral ports; severity depends on call volume not shown here.",
+  "filePath": "ApiClient.cs",
+  "lineNumber": 23,
+  "codeSnippet": "using var http = new HttpClient();"
+}</finding>
+```
+
+Why low-confidence: the pattern is real, but the impact depends on call volume the file doesn't show. Still worth flagging.
+
+### Rejected finding (do NOT emit anything like this)
+
+```
+The GetUser method could potentially return null in some cases, which might cause issues for callers that don't null-check.
+```
+
+Why rejected: uses "could", "potentially", "might", "in some cases" — all banned hedging words. No concrete input, no specific failure mode, no line number. Stay silent on this code.
+
+### Rejected finding (do NOT emit anything like this)
+
+```
+<finding>{
+  "severity": "bug",
+  "title": "Directory.CreateDirectory may throw if directory exists"
+}</finding>
+```
+
+Why rejected: `Directory.CreateDirectory` is in the safe-by-design list — it is idempotent and does not throw when the directory exists. Inventing a failure mode for a safe API is a hallucination.

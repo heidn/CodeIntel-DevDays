@@ -49,9 +49,82 @@ Before emitting any finding, scan the surrounding lines. Reject the finding if a
 - `bug` — the failure occurs in the code as written, on a path you can describe.
 - `warning` — the failure path is real but depends on caller misuse or DB state not shown. Still requires a named, concrete path.
 
+## Confidence
+
+Every `<finding>` MUST include a `confidence` field:
+
+- `"high"` — you can quote the failing line and the exact DB state / input that triggers the failure. The trigger is in the file you can see.
+- `"low"` — the pattern is real but the trigger lives in a caller or a DB row distribution you don't have full visibility into (e.g., `SELECT INTO` could match many rows depending on data — fine if the design assumes one row).
+
 ## Output rules
 
 - Each `description` states the failure path in one sentence: *"When X happens at line N, Y raises Z."*
 - Each `codeSnippet` quotes the exact failing line — not the surrounding scaffolding.
 - One finding per defect. Do not split.
 - When you have nothing more to report, write `<done />` on its own line.
+
+## Examples
+
+### Good finding (emit, high confidence)
+
+```
+<finding>{
+  "severity": "bug",
+  "confidence": "high",
+  "title": "Swallowed exception in process_order — failures look like successes",
+  "description": "The EXCEPTION block at line 88 catches WHEN OTHERS THEN NULL with no logging or re-raise. When the INSERT at line 71 fails (e.g., FK violation against ORDER_HEADER), the proc returns successfully and the caller commits a partial state.",
+  "filePath": "process_order.sql",
+  "lineNumber": 88,
+  "codeSnippet": "EXCEPTION WHEN OTHERS THEN NULL;"
+}</finding>
+```
+
+### Good finding (emit, high confidence)
+
+```
+<finding>{
+  "severity": "bug",
+  "confidence": "high",
+  "title": "SQL injection in dynamic SQL — concatenated user parameter",
+  "description": "Line 42 builds the WHERE clause by concatenating p_filter into the EXECUTE IMMEDIATE string with no bind variable. A caller supplying p_filter => '1=1 OR 1=1' bypasses the intended row restriction.",
+  "filePath": "search_orders.sql",
+  "lineNumber": 42,
+  "codeSnippet": "EXECUTE IMMEDIATE 'SELECT * FROM ORDERS WHERE ' || p_filter;"
+}</finding>
+```
+
+### Good finding (emit, low confidence)
+
+```
+<finding>{
+  "severity": "warning",
+  "confidence": "low",
+  "title": "SELECT INTO has no TOO_MANY_ROWS handler",
+  "description": "Line 55 does SELECT id INTO v_id FROM CUSTOMERS WHERE last_name = p_last_name. If two customers share a last name the proc raises TOO_MANY_ROWS unhandled. Depends on whether last_name is unique in this deployment.",
+  "filePath": "lookup_customer.sql",
+  "lineNumber": 55,
+  "codeSnippet": "SELECT id INTO v_id FROM CUSTOMERS WHERE last_name = p_last_name;"
+}</finding>
+```
+
+### Rejected finding (do NOT emit)
+
+```
+<finding>{
+  "severity": "warning",
+  "title": "COMMIT inside autonomous transaction may cause issues"
+}</finding>
+```
+
+Why rejected: `COMMIT` inside a routine declared `PRAGMA AUTONOMOUS_TRANSACTION` is the documented, intentional pattern. Inventing a failure for safe-by-design syntax is a hallucination.
+
+### Rejected finding (do NOT emit)
+
+```
+<finding>{
+  "severity": "bug",
+  "title": "Implicit cursor in FOR loop might leak"
+}</finding>
+```
+
+Why rejected: implicit cursors (`FOR rec IN (SELECT ...) LOOP`) are auto-closed by Oracle. Only explicit `OPEN ... FETCH` patterns can leak.

@@ -44,6 +44,7 @@ const severityConfig: Record<Severity, { color: string; bg: string; icon: string
 
 function FindingCard({ finding, index }: { finding: Finding; index: number }) {
   const cfg = severityConfig[finding.severity] ?? severityConfig.info;
+  const isLowConfidence = finding.confidence === 'low';
   return (
     <Paper
       sx={{
@@ -52,10 +53,11 @@ function FindingCard({ finding, index }: { finding: Finding; index: number }) {
         border: '1px solid',
         borderColor: `${cfg.color}22`,
         position: 'relative',
+        opacity: isLowConfidence ? 0.78 : 1,
         animation: 'slideIn 0.25s ease',
         '@keyframes slideIn': {
           from: { opacity: 0, transform: 'translateY(4px)' },
-          to:   { opacity: 1, transform: 'translateY(0)' },
+          to:   { opacity: isLowConfidence ? 0.78 : 1, transform: 'translateY(0)' },
         },
         '&::before': {
           content: '""',
@@ -64,6 +66,10 @@ function FindingCard({ finding, index }: { finding: Finding; index: number }) {
           width: 3,
           bgcolor: cfg.color,
           borderRadius: '6px 0 0 6px',
+          ...(isLowConfidence && {
+            backgroundImage: `repeating-linear-gradient(45deg, ${cfg.color}, ${cfg.color} 3px, transparent 3px, transparent 6px)`,
+            bgcolor: 'transparent',
+          }),
         },
       }}
     >
@@ -74,6 +80,24 @@ function FindingCard({ finding, index }: { finding: Finding; index: number }) {
         >
           {cfg.label}
         </Typography>
+        {isLowConfidence && (
+          <Tooltip title="The local model couldn't fully prove this from the visible code. Verify with Copilot before acting.">
+            <Chip
+              size="small"
+              label="low confidence"
+              sx={{
+                height: 16,
+                fontSize: '0.625rem',
+                fontFamily: '"JetBrains Mono", monospace',
+                bgcolor: 'rgba(100,116,139,0.12)',
+                color: 'text.secondary',
+                border: '1px dashed',
+                borderColor: 'rgba(100,116,139,0.4)',
+                '& .MuiChip-label': { px: 0.75 },
+              }}
+            />
+          </Tooltip>
+        )}
         <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"JetBrains Mono", monospace' }}>
           #{index + 1}
         </Typography>
@@ -592,9 +616,20 @@ export default function ResultsView() {
                 bgcolor: 'background.default',
               }}
             >
-              <Typography variant="overline" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
-                Findings ({findings.length})
-              </Typography>
+              <Stack direction="row" sx={{ alignItems: 'baseline', justifyContent: 'space-between', mb: 1.5 }}>
+                <Typography variant="overline" color="text.secondary">
+                  Findings ({findings.length})
+                </Typography>
+                {findings.some((f) => f.confidence === 'low') && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.6875rem' }}
+                  >
+                    {findings.filter((f) => f.confidence !== 'low').length} high · {findings.filter((f) => f.confidence === 'low').length} low
+                  </Typography>
+                )}
+              </Stack>
               <Stack spacing={1}>
                 {findings.map((finding, i) => (
                   <FindingCard key={i} finding={finding} index={i} />
