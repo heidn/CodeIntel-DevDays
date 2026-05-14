@@ -24,7 +24,7 @@ import { test, type Page } from '@playwright/test';
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 
 const DEMO_CONFIG = {
-  solutionPath: 'C:\\Users\\heidn\\Repos\\Devdays\\CodeIntel\\CodeIntel.sln',
+  solutionPath: 'C:\\GitRepos\\CodeIntel-DevDays\\CodeIntel-DevDays\\CodeIntel.sln',
 
   /** File to open in the preview pane for the "click a line" / "Trace from here" demos */
   previewFile: 'InvestigationOrchestrator.cs',
@@ -67,13 +67,26 @@ async function waitForLlmReady(page: Page) {
 }
 
 async function selectFileByName(page: Page, fileName: string) {
-  const item = page.locator(`text="${fileName}"`).first();
-  await item.waitFor({ state: 'visible', timeout: 15_000 });
-  // Click the checkbox sibling (preceding cell) — clicking the label opens preview instead
-  const row = item.locator('xpath=ancestor::*[contains(@class, "MuiStack-root")][1]').first();
-  const checkbox = row.locator('input[type="checkbox"]').first();
+  // Find the treeitem that contains this file name, then click its checkbox
+  const treeitem = page.getByRole('treeitem', { name: new RegExp(fileName.replace('.', '\\.')) });
+  await treeitem.waitFor({ state: 'visible', timeout: 15_000 });
+  const checkbox = treeitem.locator('input[type="checkbox"]').first();
   await checkbox.click();
   console.log(`  ✓ Selected: ${fileName}`);
+}
+
+async function expandFolderInTree(page: Page, folderName: string) {
+  // Find the treeitem for this folder and click its content area (not checkbox) to expand.
+  // MUI TreeItem handles expand/collapse on content click; the Checkbox has stopPropagation.
+  const treeitem = page.getByRole('treeitem', { name: folderName });
+  await treeitem.waitFor({ state: 'visible', timeout: 10_000 });
+  const expanded = await treeitem.getAttribute('aria-expanded');
+  if (expanded !== 'true') {
+    // Click the folder name text — this triggers MUI TreeItem expand without toggling the checkbox
+    await treeitem.getByText(folderName, { exact: true }).click();
+    await page.waitForTimeout(500);
+  }
+  console.log(`  ✓ Expanded folder: ${folderName}`);
 }
 
 async function openFileInPreview(page: Page, fileName: string) {
@@ -85,7 +98,8 @@ async function openFileInPreview(page: Page, fileName: string) {
 }
 
 async function switchMode(page: Page, mode: 'Analysis' | 'Trace' | 'Metrics') {
-  const btn = page.locator('button').filter({ hasText: new RegExp(`^.*${mode}$`) }).first();
+  // MUI ToggleButton with icon + text — match by role and exact accessible name
+  const btn = page.getByRole('button', { name: mode, exact: true });
   await btn.click();
   console.log(`→ Switched to ${mode}`);
 }
@@ -132,6 +146,7 @@ test('CodeIntel presentation demo', async ({ page }) => {
 
   // ── 4. Open a file in preview ────────────────────────────────────────────
   console.log('\n[ STEP 4 ] File preview — click a file in the tree');
+  await expandFolderInTree(page, 'Services');
   await openFileInPreview(page, DEMO_CONFIG.previewFile);
   await pause(page, DEMO_CONFIG.pauses.afterClick, 'Preview pane opens with code');
 

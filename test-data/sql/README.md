@@ -98,7 +98,7 @@ right there in the DDL syntax.
 ## How to run the smoke test
 
 1. `dotnet run --project src\CodeIntel.Server` and wait for the green dot.
-2. Load `c:\Users\heidn\Repos\Devdays\CodeIntel\test-data\sql\` via the folder picker.
+2. Load the `test-data\sql\` folder (absolute path from your clone root) via the folder picker.
 3. The tree should show all 8 files; the preset pane should show only the 4 SQL presets.
 4. Pick one file from the table above, pick the matching preset, click Run.
 5. Watch the server console for:

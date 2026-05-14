@@ -1,5 +1,96 @@
 [
   {
+    "filename": "2026-05-14-find-bugs-edcd72d6.md",
+    "completedAt": "2026-05-14T19:15:34.7763978Z",
+    "kind": "analysis",
+    "mode": "Preset",
+    "presetKey": "find-bugs",
+    "filesAnalyzed": [
+      "src\\CodeIntel.Server\\Services\\ReportDeliveryService.cs"
+    ],
+    "findingCount": 0,
+    "highSeverityCount": 0,
+    "durationSeconds": 46.9339489
+  },
+  {
+    "filename": "2026-05-14-find-bugs-8ea698e3.md",
+    "completedAt": "2026-05-14T17:56:19.4673957Z",
+    "kind": "analysis",
+    "mode": "Preset",
+    "presetKey": "find-bugs",
+    "filesAnalyzed": [
+      "src\\CodeIntel.Server\\Services\\LlamaSharpService.cs"
+    ],
+    "findingCount": 0,
+    "highSeverityCount": 0,
+    "durationSeconds": 5.3804999
+  },
+  {
+    "filename": "2026-05-14-find-bugs-9f37af94.md",
+    "completedAt": "2026-05-14T17:25:31.8270131Z",
+    "kind": "analysis",
+    "mode": "Preset",
+    "presetKey": "find-bugs",
+    "filesAnalyzed": [
+      "src\\CodeIntel.Server\\Services\\LlamaSharpService.cs"
+    ],
+    "findingCount": 0,
+    "highSeverityCount": 0,
+    "durationSeconds": 16.3248878
+  },
+  {
+    "filename": "2026-05-14-find-bugs-ee3bf59e.md",
+    "completedAt": "2026-05-14T17:12:39.2122461Z",
+    "kind": "analysis",
+    "mode": "Preset",
+    "presetKey": "find-bugs",
+    "filesAnalyzed": [
+      "src\\CodeIntel.Server\\Services\\LlamaSharpService.cs"
+    ],
+    "findingCount": 1,
+    "highSeverityCount": 1,
+    "durationSeconds": 15.2298902
+  },
+  {
+    "filename": "2026-05-14-find-bugs-8f146813.md",
+    "completedAt": "2026-05-14T17:07:58.064608Z",
+    "kind": "analysis",
+    "mode": "Preset",
+    "presetKey": "find-bugs",
+    "filesAnalyzed": [
+      "src\\CodeIntel.Server\\Services\\LlamaSharpService.cs"
+    ],
+    "findingCount": 0,
+    "highSeverityCount": 0,
+    "durationSeconds": 16.7125025
+  },
+  {
+    "filename": "2026-05-14-find-bugs-734a0a4c.md",
+    "completedAt": "2026-05-14T15:27:23.7275822Z",
+    "kind": "analysis",
+    "mode": "Preset",
+    "presetKey": "find-bugs",
+    "filesAnalyzed": [
+      "src\\CodeIntel.Server\\Services\\ReportDeliveryService.cs"
+    ],
+    "findingCount": 5,
+    "highSeverityCount": 5,
+    "durationSeconds": 43.1370385
+  },
+  {
+    "filename": "2026-05-14-find-bugs-11b4b9dd.md",
+    "completedAt": "2026-05-14T15:11:37.4759938Z",
+    "kind": "analysis",
+    "mode": "Preset",
+    "presetKey": "find-bugs",
+    "filesAnalyzed": [
+      "src\\CodeIntel.Server\\Services\\LlamaSharpService.cs"
+    ],
+    "findingCount": 0,
+    "highSeverityCount": 0,
+    "durationSeconds": 15.1306787
+  },
+  {
     "filename": "2026-05-13-trace-callees-reportwriterwritetraceasync-b07ae5c7.md",
     "completedAt": "2026-05-13T13:51:40.8267994Z",
     "kind": "trace",

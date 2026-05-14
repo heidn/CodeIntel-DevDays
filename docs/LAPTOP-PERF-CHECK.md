@@ -4,7 +4,7 @@ A self-contained checklist for diagnosing why LLamaSharp inference feels slow on
 
 ## Background
 
-- The app is at `c:\Users\heidn\Repos\Devdays\CodeIntel`.
+- The app is at `<repo-root>` (wherever you cloned the repo).
 - Model loader: [src/CodeIntel.Server/Services/LlamaSharpService.cs](../src/CodeIntel.Server/Services/LlamaSharpService.cs), LLamaSharp 0.27, Qwen2.5-Coder-7B Q4_K_M GGUF.
 - llama.cpp / LLamaSharp pick **exactly one** backend per process. Vulkan, CUDA, and CPU are mutually-exclusive native libraries; you cannot run a mixed Vulkan+CUDA+CPU pipeline. The only "hybrid" knob is `Llm:GpuLayerCount` — how many transformer layers offload to the chosen GPU backend (the rest run on CPU).
 - The csproj today references `LLamaSharp.Backend.Cpu` + `LLamaSharp.Backend.Vulkan`. CUDA is commented out, so the work laptop may actually be running Vulkan-against-NVIDIA (functional, but slower than native CUDA).

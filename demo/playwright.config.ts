@@ -18,7 +18,7 @@ export default defineConfig({
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
-        viewport: { width: 1600, height: 900 },
+        viewport: { width: 1500, height: 800 },
         launchOptions: { slowMo: 400 },
       },
     },
@@ -27,7 +27,7 @@ export default defineConfig({
       name: 'chromium-slow',
       use: {
         ...devices['Desktop Chrome'],
-        viewport: { width: 1600, height: 900 },
+        viewport: { width: 1500, height: 800 },
         launchOptions: { slowMo: 900 },
       },
     },

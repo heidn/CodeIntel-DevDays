@@ -116,25 +116,6 @@ style: |
   }
   section.section-header h1 { color: #ffffff; font-size: 2.4em; }
   section.section-header p { color: rgba(255,255,255,0.8); font-size: 1em; }
-  /* ── Video placeholder ──────────────────────────────────────────────────── */
-  .video-box {
-    background: #1e293b;
-    border-radius: 8px;
-    border: 2px dashed #4f46e5;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #94a3b8;
-    font-size: 0.85em;
-    text-align: center;
-    min-height: 320px;
-  }
-  video {
-    width: 100%;
-    border-radius: 8px;
-    border: 1px solid #e2e8f0;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
-  }
   /* ── Pagination ─────────────────────────────────────────────────────────── */
   section::after { color: #94a3b8; font-size: 0.7em; }
 paginate: true
@@ -159,7 +140,7 @@ Every developer has been here:
 - **Change confidence** — what breaks if I touch this method?
 - **Code review** — is there something wrong here that I'm missing?
 
-Existing options are slow (read it all yourself), interruptive (ask a colleague), or context-blind (paste fragments into Copilot).
+Existing options are slow (read it all yourself), interruptive (ask a colleague), or context-blind (paste fragments into Copilot without full project context).
 
 ---
 
@@ -197,6 +178,201 @@ Each mode ends with **Save to Repo** → a preset-aware Copilot prompt you paste
 
 <!-- _class: section-header -->
 
+# How an LLM Actually Works
+
+*The 30-second version every developer should know*
+
+---
+
+## LLM Inference — What Happens When You Hit "Run"
+
+An LLM is a **next-token predictor**. It doesn't "understand" code — it predicts what character sequence most likely follows.
+
+**Two phases per call:**
+
+| Phase | What happens | Duration |
+|---|---|---|
+| **Prompt evaluation** | Model reads your entire context (all input tokens) at once — matrix multiplications across every transformer layer | 30–120s on CPU for ~5K tokens |
+| **Token generation** | Model emits one token at a time — each token feeds back as input for the next | ~10–25 tok/s on CPU (7B Q4) |
+
+> **Key insight:** prompt-eval is the slow part. Once tokens start flowing, they're fast. The first token can take 90+ seconds of total silence — that's not a hang, it's the model reading.
+
+---
+
+## Tokens — Not Characters, Not Words
+
+LLMs don't see characters or words — they see **tokens** (subword chunks).
+
+```
+"NullReferenceException"  →  ["Null", "Reference", "Exception"]        (3 tokens)
+"order.Discount.Code"     →  ["order", ".", "Dis", "count", ".", "Code"]  (6 tokens)
+"if (x != null)"          →  ["if", " (", "x", " !=", " null", ")"]      (6 tokens)
+```
+
+**Why this matters for CodeIntel:**
+- Context budget is measured in tokens (~5,000 default), not lines or characters
+- A 300-line C# file ≈ 2,000–3,000 tokens — sometimes one file fills the whole budget
+- Files exceeding the budget auto-chunk at **brace boundaries** (C#/TS) or `END;` (PL/SQL)
+
+---
+
+## How Tokens Reach the UI
+
+```
+ LLM Engine                Server                    Browser
+ ─────────                 ──────                    ───────
+ [predict token]  ──►  IAsyncEnumerable<string>
+                       foreach token:
+                         • Reset idle watchdog timer
+                         • Append to FindingStreamParser
+                         • SignalR → push "token" event  ──►  analysisStore.append()
+                                                              React re-renders
+                         • If <finding>...</finding> complete:
+                           SignalR → push "finding" event ──► finding card appears
+```
+
+Every single token is pushed over **SignalR** (WebSocket) the instant it's generated. The UI renders a scan-beam animation while tokens accumulate. When the parser detects a complete `<finding>{...}</finding>` block, it emits a structured finding card alongside the raw stream.
+
+---
+
+<!-- _class: section-header -->
+
+# Crafting Prompts for a Local LLM
+
+*The hardest engineering problem in this project*
+
+---
+
+## The Prompt Engineering Challenge
+
+A 7B parameter model is **capable but undisciplined**. Without careful prompt design:
+
+- It **hedges** everything — *"this could potentially maybe cause issues"*
+- It **hallucinates** bugs that don't exist — flags null checks as missing when `?.` is right there
+- It **repeats** itself across iterations — same finding restated 3 different ways
+- It **rambles** instead of emitting structured output
+
+The prompt is not a suggestion — it's a **specification** the model must follow. Every sentence exists because a real failure happened without it.
+
+---
+
+## Anatomy of a Good Prompt — find-bugs.md
+
+The `find-bugs` prompt has **7 sections**, each solving a specific 7B failure mode:
+
+```markdown
+1. WHAT TO EMIT    — "Emit a <finding> only when you can name BOTH:
+                      the exact trigger AND the specific failure mode"
+
+2. WHAT TO LOOK FOR — Concrete bug classes: null deref, off-by-one,
+                       race conditions, resource leaks, sync-over-async
+
+3. WHEN YOU FIND NOTHING — "Write a sentence explaining WHY, then <done/>"
+                            (prevents the model from going silent)
+
+4. WHAT IS NOT A FINDING — Anti-patterns: ?.  ??  try/catch  using
+                            Safe APIs: Directory.CreateDirectory, ConcurrentDictionary
+                            Hedge words: "could/might/may" → reject
+
+5. SEVERITY RULES  — bug vs warning, with decision criteria
+6. CONFIDENCE      — high (exact line + trigger) vs low (real shape, proof incomplete)
+7. OUTPUT FORMAT   — JSON inside <finding> tags, with good + bad examples
+```
+
+---
+
+## What Made the Biggest Difference
+
+### The anti-pattern allowlist
+
+The 7B model's #1 failure: flagging **already-guarded code** as a bug.
+
+```markdown
+## What is NOT a finding (do not emit)
+Before emitting, scan the surrounding ~5 lines. Reject if:
+- `?.` null-conditional — already handled
+- `??` or `?? throw` — already handled
+- `try`/`catch` around the suspect call — already handled
+- `using`/`await using` — already disposes
+```
+
+Without this: **60%+ of findings were false positives** on guarded patterns.  
+With this: false positives dropped to ~20%, and the remaining ones are low-confidence.
+
+### The hedge-word ban
+
+> *"If your description uses 'potential', 'could', 'might', 'may', 'possibly', or 'in some cases' — do not emit the finding."*
+
+This single rule eliminated an entire class of noise.
+
+---
+
+## Structured Output — Why `<finding>` Tags?
+
+The model returns **free text** with structured blocks embedded:
+
+```xml
+Looking at the code, I notice an issue with error handling...
+
+<finding>{
+  "severity": "bug",
+  "confidence": "high",
+  "title": "Null deref when discount is null",
+  "description": "When order.Discount is null (line 12), line 47
+                  calls discount.Code.ToUpper() → NullReferenceException.",
+  "filePath": "OrderService.cs",
+  "lineNumber": 47,
+  "codeSnippet": "var code = order.Discount.Code.ToUpper();"
+}</finding>
+
+The rest of the code looks well-structured...
+<done />
+```
+
+**Why XML-style tags, not raw JSON?** The model *will* prepend prose — tags survive that. A pure JSON response breaks the moment the model says "Looking at the code..."
+
+---
+
+## The Agentic Loop — Model Requests More Context
+
+The model can ask for code it hasn't seen yet:
+
+```xml
+I need to see the constructor to verify the null path.
+<request_context type="method">OrderService.OrderService</request_context>
+```
+
+**Server response flow:**
+1. `FindingStreamParser` detects the `<request_context>` block
+2. `ContextRequestHandler` resolves via **Roslyn** — finds the symbol, extracts full syntax
+3. Context is appended to the next iteration's prompt
+4. Model runs again with the additional code visible
+
+Up to **3 iterations** — each round the model sees more of the codebase. This is what makes it "agentic" rather than single-shot.
+
+---
+
+## What an Expected Result Set Looks Like
+
+A typical `find-bugs` run on a 200-line service file:
+
+| Metric | Value |
+|---|---|
+| Prompt eval | 60–120s (cold start, CPU) |
+| Token generation | 30–60s |
+| Total wall time | 2–4 minutes |
+| Findings emitted | 2–5 |
+| High confidence | 1–2 (exact line + trigger named) |
+| Low confidence | 1–3 (pattern real, proof incomplete) |
+| False positives | ~20% (pre-aggregation) |
+| After aggregation | 0–1 dupes collapsed |
+
+**The 7B model is intentionally noisy.** Low-confidence findings are kept (dimmed in UI) because Copilot will verify them in the handoff step. A missed real bug costs more than a false positive that Copilot dismisses in seconds.
+
+---
+
+<!-- _class: section-header -->
+
 # Analysis Mode
 
 *Agentic finding loop across selected files*
@@ -221,20 +397,16 @@ Each mode ends with **Save to Repo** → a preset-aware Copilot prompt you paste
 
 <!-- _class: demo -->
 
-## Analysis Mode — Demo
+## Analysis — Live Demo
 
-<!-- To embed a recording: replace the div below with:
-     <video src="./videos/analysis-demo.mp4" controls></video>
-     Record with Win+G (Xbox Game Bar) or OBS -->
+> **LIVE DEMO** — load CodeIntel.sln → select a file → pick "find-bugs" → hit Run
 
-<div class="video-box">
-  📹 DEMO — or paste video here<br><br>
-  <small>
-    Show: load CodeIntel.sln → select a file → pick "find-bugs" → hit Run<br>
-    Watch tokens stream in, findings appear with confidence chips<br>
-    Click a finding → VS Code deep-link opens the exact line
-  </small>
-</div>
+**What to watch for:**
+- Cold-start panel during prompt evaluation (60–120s silence — model is reading)
+- Scan-beam animation as tokens stream in character by character
+- `<finding>` blocks appear as structured cards the instant they're parsed
+- Confidence chips: solid bar = high, dashed bar = low
+- Click a finding → VS Code deep-link opens the exact line
 
 ---
 
@@ -303,29 +475,27 @@ Mermaid diagram is **generated programmatically** — not LLM-emitted, always co
 
 <!-- _class: demo -->
 
-## Trace Mode — Demo
+## Trace Mode — Live Demo
 
-<div class="video-box">
-  📹 DEMO — Trace from any symbol<br><br>
-  <small>
-    <strong>Cool moment:</strong> open any file → click a method name → "Trace from `methodName`"<br>
-    Switches to Trace mode pre-populated with the symbol's location (Roslyn-resolved)<br>
-    Watch the Mermaid diagram build live · DB nodes are cylinders · HTTP nodes are hexagons<br>
-    Click a node card → VS Code opens at the method definition
-  </small>
-</div>
+> **LIVE DEMO** — open a file → click a method → "Trace from here"
+
+**What to watch for:**
+- Mode auto-switches to Trace with the symbol's location pre-populated
+- Mermaid diagram builds live — DB nodes are cylinders, HTTP nodes are hexagons
+- Per-node LLM synopses appear as cards below the graph
+- Dashed arrows = back-edges (cycles detected)
+- Click a node card → VS Code opens at the method definition
 
 ---
 
 <!-- _class: demo -->
 
-## ★ The killer feature — Findings overlay on trace
+## Findings Overlay on Trace
 
 Run an Analysis. Switch to Trace. **The bug findings auto-decorate the call graph.**
 
 - Bug rings appear on Mermaid nodes where findings landed
 - Each node card gets a finding chip (`BUG`, `WARN`, `DEAD`) with severity color
-- Click the dismiss chip to hide the overlay
 
 ```mermaid
 flowchart LR
@@ -351,28 +521,16 @@ The trace becomes a **bug heatmap** — instantly see which paths in the call gr
 
 <!-- _class: demo -->
 
-## Pin to Analysis
+## Pin to Analysis + Code Annotation
 
-Select a line range in any file → **"Pin to analysis"** button → snippet becomes a chip.
+**Pin to Analysis:** Select a line range in any file → **"Pin to analysis"** → snippet becomes a chip.  
+Ask a focused question with exact context attached.
 
-Switch to free-text mode and ask a focused question:
-
-> *"Why does this loop have a 90-second timeout instead of using the request token?"*
-
-The pinned snippet is sent verbatim with your question — model has the exact context.
-
----
-
-<!-- _class: demo -->
-
-## Code Annotation View
-
-After a Find Bugs / Find Dead Code / Business Rules run:
-
+**Code Annotation View:** After a find-bugs / find-dead-code run:
 - **Output tab** — streamed model rationale + finding cards (default)
-- **Code tab** — toggle in the header → see findings rendered **inline** in the source
+- **Code tab** — findings rendered **inline** next to the line they flagged
 
-Each finding sits next to the line it flagged, color-coded by severity, expandable for full context.
+Each finding sits next to the source line, color-coded by severity, expandable.
 
 ---
 
@@ -386,24 +544,7 @@ Each finding sits next to the line it flagged, color-coded by severity, expandab
 
 <!-- _class: demo -->
 
-## Metrics Tab — Demo
-
-<!-- <video src="./videos/metrics-demo.mp4" controls></video> -->
-
-<div class="video-box">
-  📹 DEMO — or paste video here<br><br>
-  <small>
-    Show: switch to Metrics tab → compute → sortable table loads<br>
-    Sort by cyclomatic complexity → flag chips appear on high values<br>
-    Click a row → file opens at the method's start line in the preview panel
-  </small>
-</div>
-
----
-
-<!-- _class: demo -->
-
-## Metrics Tab — What It Measures
+## Metrics — Static Analysis, No LLM
 
 | Metric | C# (Roslyn) | PL/SQL (ANTLR) |
 |---|---|---|
@@ -416,7 +557,7 @@ Each finding sits next to the line it flagged, color-coded by severity, expandab
 | Cursor declarations | — | ✅ |
 | Swallowed WHEN OTHERS | — | ✅ |
 
-Results **cached by content hash** — instant on reopen. Re-runs only when files change.
+Roslyn AST walk for C#, ANTLR token stream for PL/SQL. **No inference.** Cached by content hash — instant on reopen. Sortable table with flag chips, click a row to open the file at that method.
 
 ---
 
@@ -462,10 +603,22 @@ Results **cached by content hash** — instant on reopen. Re-runs only when file
 
 ---
 
-## What I Learned
+## What I Learned — LLM Prompt Engineering
+
+**The prompt is the product.** 80% of the engineering effort was prompt iteration, not application code. Every sentence in the prompt template exists because a real model failure happened without it.
+
+**Negative examples matter more than positive ones.** Telling the model what NOT to emit (hedge words, already-guarded code, safe APIs) reduced false positives from 60% to ~20%.
+
+**Structured output needs escape hatches.** The model must know what to do when it finds nothing — otherwise it invents findings or goes silent. An explicit "write a sentence explaining why, then `<done/>`" path prevents both failure modes.
+
+**Confidence as a first-class field, not a filter.** Don't drop uncertain findings — surface them dimmed. A 7B model hedges on things Copilot can confirm in seconds. Missing a real bug costs more than showing a false positive.
+
+---
+
+## What I Learned — Architecture
 
 **"Don't make the local model good — make Copilot's verification round fast."**  
-A 7B model is noisy. Structured output + confidence fields + aggregation beats prompt engineering.
+A 7B model is noisy. Structured output + confidence fields + aggregation beats prompt engineering alone.
 
 **ANTLR beats regex for real grammars.**  
 The regex PL/SQL parser mishandled comments, strings, multi-line statements. Narrow grammar, correct output.
@@ -486,7 +639,7 @@ WAL mode, zero ops, OpenShift PVC-mountable. Right call over Postgres.
 
 **Feature expansion:**
 - **Oracle live** — `ALL_TABLES` / `USER_SOURCE` instead of repo-only DDL grep
-- **TypeScript LSP** — LSP client shipped; needs verification on a real React/Next.js repo
+- **TypeScript LSP** — LSP client shipped; verification on real React/Next.js repos ongoing
 - **Business documentation mode** — trace all entry points → feature catalog
 - **Dockerfile + OpenShift** — multi-stage build, volume mounts, `/readyz` probe
 
@@ -507,7 +660,7 @@ WAL mode, zero ops, OpenShift PVC-mountable. Right call over Postgres.
   SPEAKER NOTES  (not rendered as slides)
 ════════════════════════════════════════════════════════════════════
 
-PACING — 10 minutes total
+PACING — 12–15 minutes (expanded for LLM deep-dive)
 
 Slide 1 — Title (0:00–0:30)
   "I built a tool during dev days that lets you point a local LLM
@@ -515,12 +668,12 @@ Slide 1 — Title (0:00–0:30)
    structured findings, call graphs, and complexity metrics in
    minutes, without sending your code anywhere."
 
-Slide 2 — Problem (0:30–1:30)
+Slide 2 — Problem (0:30–1:15)
   "The trigger: I kept getting handed unfamiliar code to review.
    No fast way to get oriented. Read everything slowly, interrupt
    a colleague, or paste fragments into Copilot without full context."
 
-Slide 3 — Architecture (1:30–2:30)
+Slide 3 — Architecture (1:15–2:00)
   "The key insight was separating the roles. A 7B model on my
    laptop is good at reading 500 lines and saying 'three things
    look suspicious.' It's bad at being authoritative. Copilot —
@@ -528,120 +681,138 @@ Slide 3 — Architecture (1:30–2:30)
    structured briefing and producing tickets, PRs, fix plans.
    The MD report is the bridge. Durable, committable, AI-consumable."
 
-Slide 4 — Three Modes (2:30–3:00)
-  Quick overview. "Three modes: analysis is the LLM loop, trace is
-   Roslyn BFS for call graphs, metrics is static analysis — no
-   inference, always instant."
+Slide 4 — Three Modes (2:00–2:15)
+  Quick overview. Three modes: analysis, trace, metrics.
 
-── ANALYSIS SECTION ────────────────────────────────────────────
+── HOW AN LLM WORKS ────────────────────────────────────────────
 
-Slide 5 — Section header (3:00–3:10)  [just read the title]
+Slide 5 — Section header (2:15–2:20)
 
-Slide 6 — Analysis How It Works (3:10–3:45)
-  "Eight presets filtered by language. The agentic loop: the model
-   can request more context mid-run — a class body, a method, its
-   callers — and the server fulfills via Roslyn. Every finding
-   carries a confidence field. Low-confidence ones surface dimmed
-   but are never dropped — a hedged real finding beats a missed one."
+Slide 6 — LLM Inference (2:20–3:15)
+  "Two phases. First: prompt eval — the model reads your entire
+   input at once. This is the slow part, 60-120 seconds of silence
+   on CPU. It's not hanging. Second: token generation — one token
+   at a time, each feeding back as input for the next. About 10-25
+   tokens per second on a laptop CPU with a 7B model."
 
-Slide 7 — Analysis Demo (3:45–5:00)  [LIVE DEMO or VIDEO]
+Slide 7 — Tokens (3:15–3:45)
+  "LLMs don't see characters or words — they see tokens, which are
+   subword chunks. NullReferenceException is 3 tokens, not 1 word.
+   This matters because our context budget is 5000 tokens. A 300-line
+   C# file might be 2500 tokens. Files that don't fit get auto-chunked
+   at brace boundaries."
+
+Slide 8 — How Tokens Reach the UI (3:45–4:15)
+  "Every single token is pushed over SignalR the instant it's generated.
+   The UI shows a scan-beam animation. When the parser detects a complete
+   <finding> block in the stream, it fires a structured finding card.
+   You see both the raw model output and the parsed findings simultaneously."
+
+── PROMPT ENGINEERING ──────────────────────────────────────────
+
+Slide 9 — Section header (4:15–4:20)
+
+Slide 10 — The Challenge (4:20–4:50)
+  "The hardest engineering problem wasn't the architecture — it was
+   getting a 7B model to produce useful output. Without careful prompts
+   it hedges everything, hallucinates bugs that don't exist, and repeats
+   itself. The prompt is a specification, not a suggestion."
+
+Slide 11 — Anatomy of find-bugs.md (4:50–5:30)
+  "Seven sections, each solving a specific failure mode. What to emit,
+   what to look for, what to do when you find nothing, what is NOT a
+   finding — that anti-pattern section is the most important one —
+   severity rules, confidence guidance, and output format with examples."
+
+Slide 12 — What Made the Biggest Difference (5:30–6:15)
+  "Two things. First: the anti-pattern allowlist. The model's #1 failure
+   was flagging code that's already guarded — null-conditional, try/catch,
+   using blocks. Telling it to scan 5 lines around the suspect line and
+   reject if any guard is present dropped false positives from 60% to 20%.
+   Second: the hedge-word ban. One sentence — 'if your description uses
+   could, might, may, or possibly, don't emit it' — eliminated an entire
+   class of noise."
+
+Slide 13 — Structured Output (6:15–6:45)
+  "The model returns free text with XML-tagged JSON blocks embedded.
+   Why not pure JSON? Because the model WILL prepend prose. Tags survive
+   that. A pure JSON response breaks the moment it says 'Looking at...'
+   The parser does a single-pass O(n) scan for opening and closing tags."
+
+Slide 14 — Agentic Loop (6:45–7:15)
+  "The model can request code it hasn't seen. It emits a request_context
+   tag, the server resolves via Roslyn, appends to the next iteration.
+   Up to 3 rounds. This is what makes it agentic — the model decides
+   what else it needs to see."
+
+Slide 15 — Expected Results (7:15–7:45)
+  "Typical run: 2-4 minutes, 2-5 findings, 1-2 high confidence, about
+   20% false positives post-aggregation. The model is intentionally
+   noisy — low-confidence findings are kept because Copilot verifies."
+
+── ANALYSIS DEMO ───────────────────────────────────────────────
+
+Slide 16 — Section header (7:45–7:50)
+
+Slide 17 — Analysis How It Works (7:50–8:15)
+  Quick — 8 presets, agentic loop, confidence field. Already covered
+  the mechanics in the LLM section.
+
+Slide 18 — Live Demo (8:15–9:30)  [LIVE DEMO]
   Load CodeIntel.sln → select a file → find-bugs → Run
-  Watch tokens stream in, findings appear
-  Click a finding to open VS Code at the exact line
+  Point out: cold-start silence, scan beam, findings appearing,
+  confidence chips, click to open VS Code.
 
-Slide 8 — Findings Output (5:00–5:30)
-  "After the loop, a dedup pass collapses near-duplicates the 7B
-   model tends to re-state across iterations. Ignore button
-   persists a SHA-256 signature — suppressed on future runs."
+Slide 19 — Findings Output (9:30–9:45)
+  Quick — aggregation, ignore button, SHA-256 signature.
 
-Slide 9 — Copilot Handoff (5:30–6:00)
-  "Save to repo → file lands in docs/codeintel/. The report ends
-   with a preset-aware Copilot prompt. Paste the #file: reference
-   into Copilot Chat and get instant structured triage."
+Slide 20 — Copilot Handoff (9:45–10:00)
+  "Save to repo, paste #file: into Copilot Chat, instant triage."
 
 ── TRACE SECTION ───────────────────────────────────────────────
 
-Slide 10 — Section header (6:00–6:05)
+Slide 21 — Section header (10:00–10:05)
 
-Slide 11 — Trace How It Works (6:05–6:30)
-  "Type a method name — or click Trace from here in any file
-   preview. Pick direction and depth. Roslyn does a BFS; the
-   diagram is generated programmatically, not by the LLM, so it's
-   always correct. DB access nodes are cylinders, HTTP call nodes
-   are hexagons."
+Slide 22 — Trace How It Works (10:05–10:25)
+  Quick — Roslyn BFS, node classification, programmatic Mermaid.
 
-Slide 12 — Trace Demo (6:30–7:15)  [LIVE DEMO or VIDEO]
-  Type ReportWriter.WriteTraceAsync → Callees → depth 1 → Run
-  Show Mermaid diagram building live
-  Click a node to open VS Code
+Slide 23 — Trace Live Demo (10:25–11:00)  [LIVE DEMO]
+  Open file, click method, "Trace from here", watch Mermaid build.
 
-Slide 13 — Trace Output (7:15–7:30)
-  Point out shapes, colors, dashed back-edges. Quick.
+Slide 24 — Findings Overlay (11:00–11:15)
+  "Run analysis then switch to trace — bug rings appear on the graph."
 
-── METRICS SECTION ─────────────────────────────────────────────
+── UX + METRICS ────────────────────────────────────────────────
 
-Slide 14 — Section header (7:30–7:35)
+Slide 25 — Section header (11:15–11:20)
 
-Slide 15 — Metrics Demo (7:35–8:00)  [LIVE DEMO or VIDEO]
-  Switch to Metrics tab → Compute → sort by complexity → click a row
+Slide 26 — Pin + Code Annotation (11:20–11:35)
+  Quick — pin snippets, inline annotations. Two features, one slide.
 
-Slide 16 — Metrics What It Measures (8:00–8:15)
-  "No inference. Roslyn AST walk for C#, ANTLR token stream for
-   PL/SQL. Cached by content hash — re-opening on an unchanged
-   workspace is instant."
+Slide 27 — Section header (11:35–11:40)
+
+Slide 28 — Metrics (11:40–12:00)
+  "No inference. Roslyn + ANTLR. Cached. Click to open."
 
 ── HARDENING + WRAP ────────────────────────────────────────────
 
-Slide 17 — Hardening (8:15–8:50)
-  "This crossed from demo to team-tool territory. Rate limiting,
-   secret scrubbing, result cache, health probes. The main blocker
-   before OpenShift is auth."
+Slide 29 — Section header (12:00–12:05)
 
-Slide 18 — What I Learned (8:50–9:20)
-  Hit the 4 bullets quickly. The 7B model insight is the most
-  interesting one — spend a sentence on it.
+Slide 30 — Hardening (12:05–12:30)
+  Quick scan of the grid. "Rate limiting, secret scrubbing, result cache."
 
-Slide 19 — What's Next (9:20–9:45)
-  Auth is the gate. Everything else is feature expansion.
+Slide 31 — What I Learned — Prompts (12:30–13:00)
+  "The prompt is the product. Negative examples > positive. Confidence
+   as a field, not a filter. Escape hatches for empty results."
 
-Slide 20 — Thank You / Questions (9:45–10:00)
+Slide 32 — What I Learned — Architecture (13:00–13:30)
+  "Briefing officer / analyst split. ANTLR > regex. Config drift = outage.
+   SQLite is perfect for dev tools."
 
+Slide 33 — What's Next (13:30–13:50)
+  Auth gate + feature expansion. Quick.
 
-════════════════════════════════════════════════════════════════════
-  VIDEO RECORDING GUIDE
-════════════════════════════════════════════════════════════════════
-
-  Recommended: record each feature as a separate short clip,
-  then embed in the matching demo slide.
-
-  RECORDING TOOLS (Windows, free):
-  ──────────────────────────────────
-  • Xbox Game Bar     Win + G → Record  (built-in, no install)
-  • OBS Studio        obsproject.com     (more control, free)
-  • ShareX            getsharex.com      (also exports GIF)
-
-  EMBEDDING IN MARP:
-  ──────────────────────────────────
-  1. Save clips to  docs/videos/  alongside this file.
-  2. Replace the <div class="video-box"> block with:
-
-     <video src="./videos/analysis-demo.mp4" controls></video>
-
-  3. In VS Code Marp settings, enable "allowLocalFiles" so
-     the preview can load local video files:
-     { "markdown.marp.allowLocalFiles": true }
-
-  4. Export to HTML (not PDF) so <video> stays interactive.
-     Marp CLI: marp PRESENTATION.md --html -o presentation.html
-
-  CLIP GUIDE:
-  ──────────────────────────────────
-  analysis-demo.mp4   ~60s   Load .sln, select files, run find-bugs,
-                             watch stream, click finding → VS Code
-  trace-demo.mp4      ~45s   Type method, run callees depth=1,
-                             Mermaid renders, click node → VS Code
-  metrics-demo.mp4    ~30s   Switch to Metrics, compute, sort,
-                             click row → file preview at method line
+Slide 34 — Thank You (13:50–14:00)
 
 ════════════════════════════════════════════════════════════════════
 -->
