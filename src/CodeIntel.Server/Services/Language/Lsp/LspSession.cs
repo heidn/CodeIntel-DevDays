@@ -137,9 +137,23 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
 
         try
         {
-            await _rpc.InvokeWithCancellationAsync<LspProtocol.InitializeResult>(
-                "initialize", new object[] { initParams }, timeout.Token);
-            await _rpc.NotifyAsync("initialized", new { });
+            // LSP methods take a single by-name params object — NOT a positional
+            // array. StreamJsonRpc's InvokeWithCancellationAsync(method, object[], ct)
+            // sends `params: [obj]`; the LSP server rejects that with
+            // "defines parameters by name but received parameters by position".
+            // InvokeWithParameterObjectAsync sends `params: obj` as required.
+            await _rpc.InvokeWithParameterObjectAsync<LspProtocol.InitializeResult>(
+                "initialize", initParams, timeout.Token);
+            await _rpc.NotifyWithParameterObjectAsync("initialized", new { });
+
+            // typescript-language-server's `workspace/symbol` returns nothing until
+            // tsserver has loaded a project — and tsserver only loads a project once
+            // a file is opened. Open one source file and poll until the symbol index
+            // is live, so the first trace / class-lookup query doesn't come back empty.
+            // Warmup failures degrade the session (text-search fallback) but never
+            // kill it — hence the broad catch and the original `ct`, not the init timeout.
+            await WarmUpProjectAsync(ct);
+
             _ready = true;
             _logger.LogInformation("LSP session ready for workspace {Id} at {Root}", WorkspaceId, _rootFolder);
         }
@@ -149,6 +163,137 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
             await DisposeAsync();
             throw;
         }
+    }
+
+    private async Task WarmUpProjectAsync(CancellationToken ct)
+    {
+        try
+        {
+            var warmupFiles = FindWarmupFiles(_rootFolder);
+            if (warmupFiles.Count == 0)
+            {
+                _logger.LogWarning(
+                    "LSP warmup: no source file found under {Root} — workspace/symbol may return empty",
+                    _rootFolder);
+                return;
+            }
+
+            // typescript-language-server's `workspace/symbol` only returns symbols
+            // from files tsserver has actually PARSED — opening one file (even one
+            // in the main program) leaves the rest invisible. A code-intelligence
+            // tool needs project-wide symbol search, so we open every source file
+            // up front. Bounded by FindWarmupFiles' BFS cap; source files are
+            // ordered first so a huge repo still gets the important ones.
+            foreach (var f in warmupFiles)
+                await EnsureDocumentOpenAsync(f, ct);
+            _logger.LogInformation(
+                "LSP warmup: opened {Count} source files to seed the symbol index", warmupFiles.Count);
+
+            // tsserver loads/indexes the project asynchronously after didOpen. Poll
+            // workspace/symbol with a short query derived from a warmup file's name
+            // until it answers (index live) or we hit the init budget.
+            var probe = Path.GetFileNameWithoutExtension(warmupFiles[0]);
+            var query = probe.Length >= 2 ? probe[..2] : probe;
+            var sw = Stopwatch.StartNew();
+            var budget = TimeSpan.FromSeconds(_options.InitializeTimeoutSeconds);
+
+            while (sw.Elapsed < budget)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var symbols = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.SymbolInformation[]?>(
+                        "workspace/symbol", new LspProtocol.WorkspaceSymbolParams(query), ct);
+                    if (symbols is { Length: > 0 })
+                    {
+                        _logger.LogInformation(
+                            "LSP warmup: project index live after {Ms}ms ({Count} symbols for '{Query}')",
+                            sw.ElapsedMilliseconds, symbols.Length, query);
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "LSP warmup probe failed (will retry)");
+                }
+                await Task.Delay(500, ct);
+            }
+
+            _logger.LogWarning(
+                "LSP warmup: workspace/symbol still empty after {Sec}s — semantic lookups may be degraded",
+                _options.InitializeTimeoutSeconds);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("LSP warmup cancelled for workspace {Id} — semantic lookups may be degraded", WorkspaceId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "LSP warmup failed for workspace {Id} — semantic lookups may be degraded", WorkspaceId);
+        }
+    }
+
+    /// <summary>
+    /// Finds the workspace's source files to seed tsserver's symbol index. tsserver's
+    /// <c>workspace/symbol</c> only covers files it has parsed, so for project-wide
+    /// symbol search every source file must be opened. Bounded BFS that skips
+    /// dependency / build dirs and root-level config files; source-dir files are
+    /// ordered first so an oversized repo still gets the important ones before the cap.
+    /// </summary>
+    private static List<string> FindWarmupFiles(string root)
+    {
+        string[] excludeDirs = ["node_modules", "dist", ".next", "out", ".cache", ".git", "bin", "obj"];
+        string[] sourceDirHints = ["src", "app", "lib", "components", "pages", "screens", "features"];
+        const int MaxFiles = 400;
+
+        var candidates = new List<string>();
+        var stack = new Stack<string>();
+        stack.Push(root);
+        var dirsVisited = 0;
+
+        while (stack.Count > 0 && dirsVisited < 2000 && candidates.Count < 400)
+        {
+            var dir = stack.Pop();
+            dirsVisited++;
+            string[] files, dirs;
+            try
+            {
+                files = Directory.GetFiles(dir);
+                dirs = Directory.GetDirectories(dir);
+            }
+            catch { continue; }
+
+            foreach (var f in files)
+            {
+                var ext = Path.GetExtension(f).ToLowerInvariant();
+                if (ext is not (".ts" or ".tsx" or ".js" or ".jsx")) continue;
+                if (f.EndsWith(".d.ts", StringComparison.OrdinalIgnoreCase)
+                    || f.EndsWith(".min.js", StringComparison.OrdinalIgnoreCase)) continue;
+                // Skip config files — they load inferred projects, not the main program.
+                var name = Path.GetFileName(f);
+                if (name.Contains(".config.", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("babel.config.js", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("metro.config.js", StringComparison.OrdinalIgnoreCase)) continue;
+                candidates.Add(f);
+            }
+            foreach (var d in dirs)
+            {
+                if (!excludeDirs.Contains(Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
+                    stack.Push(d);
+            }
+        }
+
+        // Prefer files under a recognized source directory; tiebreak deeper-first so
+        // we land inside the program rather than on a top-level shim.
+        bool UnderSourceDir(string p) => p
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(seg => sourceDirHints.Contains(seg, StringComparer.OrdinalIgnoreCase));
+
+        return candidates
+            .OrderByDescending(UnderSourceDir)
+            .ThenByDescending(p => p.Count(c => c is '/' or '\\'))
+            .Take(MaxFiles)
+            .ToList();
     }
 
     /// <summary>
@@ -177,7 +322,7 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
                 ".jsx" => "javascriptreact",
                 _      => "javascript",
             };
-            await _rpc.NotifyAsync("textDocument/didOpen",
+            await _rpc.NotifyWithParameterObjectAsync("textDocument/didOpen",
                 new LspProtocol.DidOpenTextDocumentParams(
                     new LspProtocol.TextDocumentItem(
                         Uri: LspProtocol.PathToUri(filePath),
@@ -221,9 +366,9 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
         try
         {
             using var cts = WithTimeout(ct);
-            var symbols = await _rpc.InvokeWithCancellationAsync<LspProtocol.SymbolInformation[]?>(
+            var symbols = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.SymbolInformation[]?>(
                 "workspace/symbol",
-                new object[] { new LspProtocol.WorkspaceSymbolParams(name) },
+                new LspProtocol.WorkspaceSymbolParams(name),
                 cts.Token);
 
             var match = symbols?.FirstOrDefault(s =>
@@ -258,9 +403,9 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
         {
             // Resolve the symbol, then ask for references with includeDeclaration=false.
             using var cts = WithTimeout(ct);
-            var symbols = await _rpc.InvokeWithCancellationAsync<LspProtocol.SymbolInformation[]?>(
+            var symbols = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.SymbolInformation[]?>(
                 "workspace/symbol",
-                new object[] { new LspProtocol.WorkspaceSymbolParams(methodName) },
+                new LspProtocol.WorkspaceSymbolParams(methodName),
                 cts.Token);
 
             var symbol = symbols?.FirstOrDefault(s =>
@@ -275,8 +420,8 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
                 Position: symbol.Location.Range.Start,
                 Context: new LspProtocol.ReferenceContext(IncludeDeclaration: false));
 
-            var refs = await _rpc.InvokeWithCancellationAsync<LspProtocol.Location[]?>(
-                "textDocument/references", new object[] { refParams }, cts.Token);
+            var refs = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.Location[]?>(
+                "textDocument/references", refParams, cts.Token);
 
             return refs?.Take(20).Select(l =>
                 new CallerInfo(
@@ -299,14 +444,11 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
         {
             await EnsureDocumentOpenAsync(filePath, ct);
             using var cts = WithTimeout(ct);
-            var defs = await _rpc.InvokeWithCancellationAsync<LspProtocol.Location[]?>(
+            var defs = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.Location[]?>(
                 "textDocument/definition",
-                new object[]
-                {
-                    new LspProtocol.TextDocumentPositionParams(
-                        TextDocument: new LspProtocol.TextDocumentIdentifier(LspProtocol.PathToUri(filePath)),
-                        Position: new LspProtocol.Position(line - 1, character)),
-                },
+                new LspProtocol.TextDocumentPositionParams(
+                    TextDocument: new LspProtocol.TextDocumentIdentifier(LspProtocol.PathToUri(filePath)),
+                    Position: new LspProtocol.Position(line - 1, character)),
                 cts.Token);
 
             var def = defs?.FirstOrDefault();
@@ -346,12 +488,20 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
                 var methodPart = parts[^1];
                 var typeHint = parts.Length > 1 ? parts[^2] : null;
 
-                var symbols = await _rpc.InvokeWithCancellationAsync<LspProtocol.SymbolInformation[]?>(
+                var symbols = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.SymbolInformation[]?>(
                     "workspace/symbol",
-                    new object[] { new LspProtocol.WorkspaceSymbolParams(methodPart) },
+                    new LspProtocol.WorkspaceSymbolParams(methodPart),
                     cts.Token);
 
                 if (symbols is null) return Array.Empty<MethodHandle>();
+
+                // Diagnostic for the open LSP-#4 issue (workspace/symbol blind to
+                // project symbols). Debug-level — bump the `…LanguageBackends.Lsp`
+                // log category to Debug to see it. Remove once trace-on-TS is verified.
+                _logger.LogDebug(
+                    "LSP workspace/symbol('{Query}') → {Count} raw symbols: {Sample}",
+                    methodPart, symbols.Length,
+                    string.Join("; ", symbols.Take(10).Select(s => $"{s.Name}[kind={s.Kind},container={s.ContainerName}]")));
 
                 var matching = symbols.Where(s =>
                     string.Equals(s.Name, methodPart, StringComparison.Ordinal)
@@ -399,9 +549,9 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
         try
         {
             using var cts = WithTimeout(ct);
-            var calls = await _rpc.InvokeWithCancellationAsync<LspProtocol.CallHierarchyIncomingCall[]?>(
+            var calls = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.CallHierarchyIncomingCall[]?>(
                 "callHierarchy/incomingCalls",
-                new object[] { new LspProtocol.CallHierarchyIncomingCallsParams(item) },
+                new LspProtocol.CallHierarchyIncomingCallsParams(item),
                 cts.Token);
             return calls?.Select(c => BuildHandle(c.From)).ToList() ?? new List<MethodHandle>();
         }
@@ -420,9 +570,9 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
         try
         {
             using var cts = WithTimeout(ct);
-            var calls = await _rpc.InvokeWithCancellationAsync<LspProtocol.CallHierarchyOutgoingCall[]?>(
+            var calls = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.CallHierarchyOutgoingCall[]?>(
                 "callHierarchy/outgoingCalls",
-                new object[] { new LspProtocol.CallHierarchyOutgoingCallsParams(item) },
+                new LspProtocol.CallHierarchyOutgoingCallsParams(item),
                 cts.Token);
             return calls?.Select(c => BuildHandle(c.To)).ToList() ?? new List<MethodHandle>();
         }
@@ -467,14 +617,11 @@ public sealed class LspSession : ILspSession, IAsyncDisposable
         await EnsureDocumentOpenAsync(filePath, ct);
         try
         {
-            var items = await _rpc.InvokeWithCancellationAsync<LspProtocol.CallHierarchyItem[]?>(
+            var items = await _rpc.InvokeWithParameterObjectAsync<LspProtocol.CallHierarchyItem[]?>(
                 "textDocument/prepareCallHierarchy",
-                new object[]
-                {
-                    new LspProtocol.CallHierarchyPrepareParams(
-                        TextDocument: new LspProtocol.TextDocumentIdentifier(LspProtocol.PathToUri(filePath)),
-                        Position: new LspProtocol.Position(line, character)),
-                },
+                new LspProtocol.CallHierarchyPrepareParams(
+                    TextDocument: new LspProtocol.TextDocumentIdentifier(LspProtocol.PathToUri(filePath)),
+                    Position: new LspProtocol.Position(line, character)),
                 ct);
             return items?.FirstOrDefault();
         }

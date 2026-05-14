@@ -48,7 +48,11 @@ public record WorkspaceMetricsResult(
     Language Language,
     string  ContentHash,
     MetricsSummary Summary,
-    IReadOnlyList<FileMetricsResult> Files
+    IReadOnlyList<FileMetricsResult> Files,
+    // False when the workspace language has no metrics analyzer (TypeScript, Java).
+    // Lets the UI distinguish "language unsupported" from "0 methods found" — both
+    // otherwise present as an empty result. See MetricsService.IsMetricsSupported.
+    bool Supported = true
 );
 
 public record MetricsComputeRequest(

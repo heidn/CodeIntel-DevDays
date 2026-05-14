@@ -1,0 +1,14 @@
+{
+  "name": "codeintel-demo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "demo": "playwright test --headed --project=chromium",
+    "demo:slow": "playwright test --headed --project=chromium-slow",
+    "demo:record": "playwright test --headed --project=chromium-slow --video=on",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

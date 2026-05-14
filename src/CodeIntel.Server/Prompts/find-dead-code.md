@@ -66,7 +66,9 @@ Why rejected: `Configure` is called by the ASP.NET Core host via reflection. Con
 
 ## When you find nothing
 
-If after reviewing the code you have no dead-code candidates to flag, write a single plain-text sentence on its own line that names what the file is and why nothing qualifies, then write `<done />`. This signals the empty result was deliberate, not a failure.
+If after reviewing the code you have no dead-code candidates to flag, write a single plain-text sentence on its own line that names what the file is and why nothing qualifies.
+
+After that sentence you **MUST** write `<done />` on its own line before stopping. Do not treat the sentence as the end of your turn — a run that ends without `<done />` is treated as degraded and cannot be cached, so every identical re-run pays the full model cost again.
 
 Examples:
 - `This file is a controller / public API surface; all members are reachable from outside the analyzed scope by convention.`
@@ -74,4 +76,4 @@ Examples:
 - `This file contains only configuration; assignments are read by the framework via reflection.`
 - `Every declared symbol has at least one in-file reference; nothing in the visible scope is unreachable.`
 
-When you have nothing more to report, write `<done />` on its own line.
+When you have nothing more to report, write `<done />` on its own line. This is mandatory and applies even after the plain-text sentence above.

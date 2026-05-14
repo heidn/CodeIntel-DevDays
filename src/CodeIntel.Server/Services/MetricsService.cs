@@ -49,6 +49,23 @@ public class MetricsService : IMetricsService
         var ws = _workspace.GetWorkspace(workspaceId)
             ?? throw new InvalidOperationException("Workspace not loaded.");
 
+        // Metrics analyzers exist only for C# (Roslyn) and PL/SQL (ANTLR). For
+        // TypeScript / Java, bail early with Supported=false so the UI shows an
+        // explicit "not implemented" placeholder instead of a misleading 0/0.
+        if (!IsMetricsSupported(ws.Language))
+        {
+            _logger.LogInformation(
+                "Metrics not supported for {Language} workspace {WorkspaceId}", ws.Language, workspaceId);
+            return new WorkspaceMetricsResult(
+                WorkspaceId: workspaceId,
+                ComputedAt: DateTime.UtcNow,
+                Language: ws.Language,
+                ContentHash: "",
+                Summary: EmptySummary(),
+                Files: [],
+                Supported: false);
+        }
+
         var targets = ResolveTargets(ws, filePaths);
         if (targets.Count == 0)
         {
@@ -125,6 +142,12 @@ public class MetricsService : IMetricsService
     private static bool HasMetricExtension(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".cs" or ".sql" or ".pkg" or ".pkb" or ".pks" or ".pls" => true,
+        _ => false,
+    };
+
+    private static bool IsMetricsSupported(Language language) => language switch
+    {
+        Language.CSharp or Language.Sql => true,
         _ => false,
     };
 

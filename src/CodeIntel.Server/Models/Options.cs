@@ -21,7 +21,19 @@ public class AnalysisOptions
     public string ReportOutputPath { get; set; } = "docs/codeintel";
     public bool MaintainIndex { get; set; } = true;
     public int MaxAgenticIterations { get; set; } = 3;
+    /// <summary>
+    /// Max gap between streamed tokens once generation is underway. Detects a model
+    /// stuck mid-generation. Does NOT cover the cold-start prompt-eval phase before
+    /// the first token — that uses <see cref="FirstTokenTimeoutSeconds"/>.
+    /// </summary>
     public int IdleTokenTimeoutSeconds { get; set; } = 90;
+    /// <summary>
+    /// Grace period for the FIRST token of each LLM call. Cold-start prompt evaluation
+    /// of a budget-sized context streams nothing for a long stretch on CPU/Vulkan
+    /// hardware (~100s+ for ~5K tokens); counting that as "idle" wrongly cancels the
+    /// run. Once the first token arrives, IdleTokenTimeoutSeconds governs the rest.
+    /// </summary>
+    public int FirstTokenTimeoutSeconds { get; set; } = 240;
     public int OverallTimeoutSeconds { get; set; } = 600;
     /// <summary>
     /// LRU cap on persisted analysis/trace rows. Older rows are pruned after each save.

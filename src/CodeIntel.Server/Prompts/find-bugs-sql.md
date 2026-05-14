@@ -131,10 +131,14 @@ Why rejected: implicit cursors (`FOR rec IN (SELECT ...) LOOP`) are auto-closed 
 
 ## When you find nothing
 
-If after reviewing the PL/SQL you have no bugs to flag, write a single plain-text sentence on its own line that names what the file is and why no bugs were found, then write `<done />`. This signals the empty result was deliberate, not a failure.
+If after reviewing the PL/SQL you have no bugs to flag, write a single plain-text sentence on its own line that names what the file is and why no bugs were found.
+
+After that sentence you **MUST** write `<done />` on its own line before stopping. Do not treat the sentence as the end of your turn — a run that ends without `<done />` is treated as degraded and cannot be cached, so every identical re-run pays the full model cost again.
 
 Examples:
 - `This file is a CREATE-OR-REPLACE VIEW with no procedural logic; no failure paths to flag.`
 - `This is a small DDL script with only column definitions; no executable PL/SQL.`
 - `This proc only logs and forwards parameters to another routine; bugs would live downstream.`
 - `Every cursor is closed on every exit path and every exception handler re-raises or logs; the visible patterns are safe-by-design.`
+
+When you have nothing more to report, write `<done />` on its own line. This is mandatory and applies even after the plain-text sentence above.

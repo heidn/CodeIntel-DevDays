@@ -15,6 +15,18 @@ If you cannot name both, emit nothing. A short, accurate report beats a long, no
 - Incorrect async patterns: sync-over-async (`.Result`, `.Wait()`), fire-and-forget without observation, missing `await`.
 - Resource leaks: IDisposable not disposed, events subscribed but never unsubscribed, streams left open.
 
+## When you find nothing
+
+Finding no bugs is a valid and common outcome — many files are DTOs, config, or plumbing with no failure paths. When that is the case, do NOT stay silent: write a single plain-text sentence naming what the file is and why no bugs were found, then write `<done />` on its own line.
+
+After that sentence you **MUST** write `<done />`. A run that ends without `<done />` is treated as degraded and cannot be cached — every re-run then pays the full model cost again.
+
+Examples:
+- `This file is a DTO / record type with no executable logic; bugs would live in the service layer that constructs or consumes it.`
+- `This file contains only interface or abstract declarations; bug behavior would live in concrete implementations.`
+- `This is a configuration / options class; no failure paths to flag.`
+- `This file is a React Context wrapper for UI state with no validation or side effects; no bug-class patterns present.`
+
 ## What is NOT a finding (do not emit)
 
 Before emitting any finding, scan the surrounding ~5 lines. Reject the finding if any of these apply:
@@ -57,7 +69,7 @@ Every `<finding>` MUST include a `confidence` field, either `"high"` or `"low"`:
 - Each `description` must state the failure path in one sentence: *"When X happens at line N, Y throws Z."*
 - Each `codeSnippet` must contain the exact failing line, not scaffolding.
 - One finding per defect. Do not split.
-- When you have nothing more to report, write `<done />` on its own line.
+- When you have nothing more to report, write `<done />` on its own line. This is mandatory — even after a plain-text "no bugs found" sentence (see "When you find nothing" above), you MUST still end with `<done />`.
 
 ## Examples
 
@@ -111,13 +123,3 @@ Why rejected: uses "could", "potentially", "might", "in some cases" — all bann
 ```
 
 Why rejected: `Directory.CreateDirectory` is in the safe-by-design list — it is idempotent and does not throw when the directory exists. Inventing a failure mode for a safe API is a hallucination.
-
-## When you find nothing
-
-If after reviewing the code you have no bugs to flag, write a single plain-text sentence on its own line that names what the file is and why no bugs were found, then write `<done />`. This signals the empty result was deliberate, not a failure.
-
-Examples:
-- `This file is a DTO / record type with no executable logic; bugs would live in the service layer that constructs or consumes it.`
-- `This file contains only interface or abstract declarations; bug behavior would live in concrete implementations.`
-- `This is a configuration / options class; no failure paths to flag.`
-- `This file is a React Context wrapper for UI state with no validation or side effects; no bug-class patterns present.`

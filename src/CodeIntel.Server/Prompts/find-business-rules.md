@@ -71,11 +71,13 @@ Why rejected: a category-is-absent finding is noise. Only emit warnings when the
 
 ## When you find nothing
 
-If after reviewing the code you have no rules to extract, write a single plain-text sentence on its own line that names what the file is and why no rules were extracted, then write `<done />`. This signals the empty result was deliberate, not a failure.
+If after reviewing the code you have no rules to extract, write a single plain-text sentence on its own line that names what the file is and why no rules were extracted.
+
+After that sentence you **MUST** write `<done />` on its own line before stopping. Do not treat the sentence as the end of your turn — a run that ends without `<done />` is treated as degraded and cannot be cached, so every identical re-run pays the full model cost again.
 
 Examples:
 - `This file is a React Context wrapper for a UI boolean toggle; it contains no validation, calculation, authorization, or workflow logic.`
 - `This is a styled-component module — all logic is presentational, no domain rules to extract.`
 - `This file is a DTO with no methods; rules would live in the service layer that uses it.`
 
-When you have nothing more to report, write `<done />` on its own line.
+When you have nothing more to report, write `<done />` on its own line. This is mandatory and applies even after the plain-text sentence above.

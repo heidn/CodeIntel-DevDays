@@ -78,11 +78,14 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
         var analyzedRelativePaths = new List<string>();
         var contextTokens = 0;
 
-        // Overall hard ceiling + idle-token watchdog (reset on every token).
+        // Overall hard ceiling + idle-token watchdog. The idle watchdog is armed with
+        // the FIRST-token grace; once tokens start streaming each one re-arms it with
+        // the tighter IdleTokenTimeoutSeconds. The overall ceiling is scaled up for
+        // chunked runs (set after the chunk plan is known — see below).
         using var overallCts = new CancellationTokenSource(
             TimeSpan.FromSeconds(_analysisOptions.OverallTimeoutSeconds));
         using var idleCts = new CancellationTokenSource(
-            TimeSpan.FromSeconds(_analysisOptions.IdleTokenTimeoutSeconds));
+            TimeSpan.FromSeconds(_analysisOptions.FirstTokenTimeoutSeconds));
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             userCts.Token, overallCts.Token, idleCts.Token);
         var ct = linkedCts.Token;
@@ -126,6 +129,12 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
             }
             if (chunkPlan.IsChunked)
             {
+                // A chunked run is legitimately N× longer — each chunk pays its own
+                // cold-start prompt-eval. Scale the overall ceiling by chunk count so
+                // the hard timeout doesn't kill an otherwise-healthy multi-chunk run.
+                overallCts.CancelAfter(
+                    TimeSpan.FromSeconds(_analysisOptions.OverallTimeoutSeconds * chunkPlan.Chunks.Count));
+
                 await group.SendAsync("AnalysisEvent",
                     AnalysisEvents.Status(
                         $"{Path.GetFileName(chunkPlan.ChunkedFilePath)} is too large for one pass; " +
@@ -229,7 +238,11 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
                     var parser = new FindingStreamParser();
                     var iterationOutput = new StringBuilder();
 
-                    idleCts.CancelAfter(TimeSpan.FromSeconds(_analysisOptions.IdleTokenTimeoutSeconds));
+                    // Arm with the FIRST-token grace: cold-start prompt-eval of a
+                    // budget-sized context produces nothing for ~100s+ on this hardware
+                    // and must not be mistaken for a stuck model. Each streamed token
+                    // below re-arms with the tighter inter-token idle timeout.
+                    idleCts.CancelAfter(TimeSpan.FromSeconds(_analysisOptions.FirstTokenTimeoutSeconds));
 
                     await foreach (var token in _llm.StreamAsync(prompt, ct))
                     {
@@ -496,8 +509,9 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
 
         if (idleCts.IsCancellationRequested)
             return ("idle",
-                $"Model produced no output for {_analysisOptions.IdleTokenTimeoutSeconds}s — it appears stuck. " +
-                $"Try a smaller scope or a different preset.");
+                $"Model stalled — no token within the first-token grace ({_analysisOptions.FirstTokenTimeoutSeconds}s) " +
+                $"or a {_analysisOptions.IdleTokenTimeoutSeconds}s gap mid-generation. " +
+                $"Try a smaller scope, or raise Analysis.FirstTokenTimeoutSeconds in appsettings if cold-start prompt-eval is just slow on this hardware.");
 
         return ("unknown", "Analysis cancelled.");
     }

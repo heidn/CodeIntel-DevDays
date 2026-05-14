@@ -51,6 +51,16 @@ const FLAG_COLORS: Record<string, string> = {
   'spec-only':             '#64748b',
 };
 
+function languageLabel(lang: string): string {
+  switch (lang) {
+    case 'cSharp':     return 'C#';
+    case 'typeScript': return 'TypeScript';
+    case 'java':       return 'Java';
+    case 'sql':        return 'PL/SQL';
+    default:           return lang;
+  }
+}
+
 export default function MetricsPanel() {
   const workspace      = useWorkspaceStore((s) => s.workspace);
   const selectedFiles  = useWorkspaceStore((s) => s.selectedFiles);
@@ -189,8 +199,17 @@ export default function MetricsPanel() {
         </Alert>
       )}
 
+      {/* Unsupported-language placeholder — distinguishes "no analyzer" from "0 methods found" */}
+      {result && !result.supported && (
+        <Alert severity="info" sx={{ m: 2, fontSize: '0.8125rem' }}>
+          Metrics are not yet implemented for {languageLabel(result.language)}. Structural metrics
+          (cyclomatic complexity, nesting depth, method length, parameter count) are currently
+          computed for C# via Roslyn and PL/SQL via ANTLR. TypeScript / Java support is on the roadmap.
+        </Alert>
+      )}
+
       {/* Summary stat cards */}
-      {result && (
+      {result && result.supported && (
         <Box sx={{ px: 3, py: 1.5, borderBottom: '1px solid', borderColor: 'divider', flexShrink: 0 }}>
           <Stack direction="row" spacing={1.5} sx={{ flexWrap: 'wrap', gap: 1 }}>
             <SummaryCard label="High complexity (≥10)" value={result.summary.highComplexityCount} accent="#dc2626" />
@@ -218,7 +237,7 @@ export default function MetricsPanel() {
             <Typography variant="body2">Metrics will load when you open this tab.</Typography>
           </Box>
         )}
-        {result && filteredSortedRows.length === 0 && !loading && (
+        {result && result.supported && filteredSortedRows.length === 0 && !loading && (
           <Box sx={{ p: 4, color: 'text.secondary' }}>
             <Typography variant="body2">
               {allRows.length === 0
@@ -227,7 +246,7 @@ export default function MetricsPanel() {
             </Typography>
           </Box>
         )}
-        {result && filteredSortedRows.length > 0 && (
+        {result && result.supported && filteredSortedRows.length > 0 && (
           <TableContainer>
             <Table size="small" stickyHeader>
               <TableHead>

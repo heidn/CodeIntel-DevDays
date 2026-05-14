@@ -219,4 +219,6 @@ export interface WorkspaceMetricsResult {
   contentHash:  string;
   summary:      MetricsSummary;
   files:        FileMetricsResult[];
+  // False when the workspace language has no metrics analyzer (TypeScript, Java).
+  supported:    boolean;
 }

@@ -45,6 +45,10 @@ demo/playwright-report/
 demo/playwright-videos/
 demo/test-results/
 
+# Transient workspace-load API dumps written by runtest.py / manual curl probes
+/ws.json
+/sqlws.json
+
 # Claude Code — shared team config is .claude/settings.json (committed)
 # Per-user overrides and local state are gitignored
 .claude/settings.local.json
