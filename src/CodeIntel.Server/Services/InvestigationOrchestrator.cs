@@ -250,7 +250,7 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
             _store.Save(result);
 
             // Record the cache entry once persistence has the new analysis on file.
-            var cacheKey = ContentHasher.BuildCacheKey(request.PresetKey, _llm.ModelName, contentHash);
+            var cacheKey = ContentHasher.BuildCacheKey(request.PresetKey, _llm.ModelName, contentHash, _analysisOptions.MaxContextTokens);
             if (cacheKey is not null)
             {
                 try { await _resultCache.RememberAsync(cacheKey, analysisId, CancellationToken.None); }

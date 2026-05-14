@@ -41,7 +41,7 @@ public class ResultCache : IResultCache
     {
         if (!_options.EnableResultCache) return null;
         if (request.Mode != AnalysisMode.Preset) return null;
-        var cacheKey = ContentHasher.BuildCacheKey(request.PresetKey, modelName, contentHash);
+        var cacheKey = ContentHasher.BuildCacheKey(request.PresetKey, modelName, contentHash, _options.MaxContextTokens);
         if (cacheKey is null) return null;
 
         await using var conn = await _db.OpenAsync(ct);
