@@ -17,11 +17,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- LLM inference -->
+    <!-- LLM inference. Default backend pair = CPU + Vulkan (works on Intel iGPU + AMD/NVIDIA).
+         On a CUDA-only workstation, swap LLamaSharp.Backend.Vulkan for
+         LLamaSharp.Backend.Cuda12 LOCALLY (don't commit) and add the matching
+         CopyCudaDeps target — see CLAUDE.md "Per-machine overrides". -->
     <PackageReference Include="LLamaSharp" Version="0.27.0" />
-    <PackageReference Include="LLamaSharp.Backend.Cpu"    Version="0.27.0" />
-    <!-- CUDA 12.8 Toolkit installed; DLLs at C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin -->
-    <PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
+    <PackageReference Include="LLamaSharp.Backend.Vulkan" Version="0.27.0" />
 
     <!-- Roslyn for C# code analysis -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
@@ -39,13 +41,15 @@
          typescript-language-server. Microsoft's StreamJsonRpc handles Content-Length
          framing, request/response correlation, and notification dispatch. -->
     <PackageReference Include="StreamJsonRpc" Version="2.19.27" />
-    <!-- Transitive of StreamJsonRpc â€” pin to patched 2.5.198 to silence NU1902
+    <!-- Transitive of StreamJsonRpc — pin to patched 2.5.198 to silence NU1902
          (GHSA-4qm4-8hg2-g2xm). Stay on 2.x; 3.x is a breaking-change line. -->
     <PackageReference Include="MessagePack" Version="2.5.198" />
 
-    <!-- Transitive of Microsoft.CodeAnalysis.Workspaces.MSBuild / Microsoft.Build.Locator â€”
+    <!-- Transitive of Microsoft.CodeAnalysis.Workspaces.MSBuild / Microsoft.Build.Locator —
          pin patched 17.14.x to silence NU1903 (GHSA-h4j7-5rxr-p4wc, GHSA-w3q9-fxm7-j8fq).
-         Stay on 17.x; 18.x is a major-version jump. -->
+         Stay on 17.x; 18.x is a major-version jump. ExcludeAssets="runtime" prevents the
+         bin/ output from shadowing the SDK MSBuild that MSBuildLocator.RegisterDefaults
+         picks up at startup. -->
     <PackageReference Include="Microsoft.Build" Version="17.14.28" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.Build.Framework" Version="17.14.28" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.Build.Tasks.Core" Version="17.14.28" ExcludeAssets="runtime" />
@@ -68,7 +72,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- ANTLR grammar files â€” codegen emits to obj/{Configuration}/{TFM}/antlr -->
+    <!-- ANTLR grammar files — codegen emits to obj/{Configuration}/{TFM}/antlr -->
     <Antlr4 Include="Grammar\PlSqlRefs.g4">
       <Listener>false</Listener>
       <Visitor>true</Visitor>
@@ -103,24 +107,6 @@
         <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
       </ResolvedFileToPublish>
     </ItemGroup>
-  </Target>
-
-  <!-- Copy CUDA Toolkit DLLs + ggml-cpu.dll next to the LLamaSharp cuda12 native libs so DLL search finds them -->
-  <Target Name="CopyCudaDeps" AfterTargets="Build"
-          Condition="Exists('C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cudart64_12.dll')">
-    <ItemGroup>
-      <CudaDlls Include="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cudart64_12.dll;
-                          C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cublas64_12.dll;
-                          C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cublasLt64_12.dll" />
-    </ItemGroup>
-    <Copy SourceFiles="@(CudaDlls)"
-          DestinationFolder="$(OutputPath)runtimes\win-x64\native\cuda12\"
-          SkipUnchangedFiles="true" />
-    <!-- cuda12 folder ships without ggml-cpu.dll but llama.dll depends on it for hybrid CPU+GPU -->
-    <Copy SourceFiles="$(OutputPath)runtimes\win-x64\native\avx2\ggml-cpu.dll"
-          DestinationFolder="$(OutputPath)runtimes\win-x64\native\cuda12\"
-          SkipUnchangedFiles="true"
-          Condition="Exists('$(OutputPath)runtimes\win-x64\native\avx2\ggml-cpu.dll')" />
   </Target>
 
 </Project>

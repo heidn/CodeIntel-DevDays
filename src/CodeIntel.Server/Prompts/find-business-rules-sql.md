@@ -117,4 +117,14 @@ Every `<finding>` MUST include a `confidence` field:
 
 Why rejected: category-is-absent findings are noise. Only emit a `warning` when a specific, named operation lacks a rule you can point to a peer operation having.
 
+## When you find nothing
+
+If after reviewing the PL/SQL you have no rules to extract, write a single plain-text sentence on its own line that names what the file is and why no rules were extracted, then write `<done />`. This signals the empty result was deliberate, not a failure.
+
+Examples:
+- `This file is a CREATE INDEX / ALTER TABLE for performance, not constraint; no business rules to extract.`
+- `This proc only logs and forwards parameters; rules live in the downstream routine.`
+- `This file is a sequence / synonym declaration; pure infrastructure, no domain logic.`
+- `The DDL declares only column types with no CHECK / NOT NULL / DEFAULT clauses, and the proc body has no validation or state-transition logic.`
+
 When you have nothing more to report, write `<done />` on its own line.

@@ -56,7 +56,29 @@ public record FileContext(
     string RelativePath,
     string Content,
     bool IsExtractedSummary,
-    bool IsResolvedDependency = false
+    bool IsResolvedDependency = false,
+    /// <summary>
+    /// When non-null, this FileContext holds a slice of a larger file (lines
+    /// <see cref="ChunkStartLine"/>–<see cref="ChunkEndLine"/> of <see cref="ChunkTotalLines"/>).
+    /// PromptTemplateService labels the file accordingly so the model knows it's not seeing the whole file.
+    /// </summary>
+    int? ChunkStartLine = null,
+    int? ChunkEndLine = null,
+    int? ChunkTotalLines = null
+);
+
+/// <summary>
+/// Per-chunk metadata threaded through the orchestrator and prompt builder when
+/// a single file is split into multiple sequential analysis passes.
+/// </summary>
+public record ChunkContext(
+    int Index,                  // 1-based
+    int Total,                  // total chunks for this file
+    string FilePath,            // the file being chunked (relative-or-absolute, used for display)
+    int StartLine,
+    int EndLine,
+    int TotalLines,
+    string? CarryOverNotes      // narrative summary of prior chunks; null on the first chunk
 );
 
 public record DefinitionLocation(

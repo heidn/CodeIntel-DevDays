@@ -64,4 +64,14 @@ Every `<finding>` MUST include a `confidence` field:
 
 Why rejected: `Configure` is called by the ASP.NET Core host via reflection. Convention-called methods are not dead code.
 
+## When you find nothing
+
+If after reviewing the code you have no dead-code candidates to flag, write a single plain-text sentence on its own line that names what the file is and why nothing qualifies, then write `<done />`. This signals the empty result was deliberate, not a failure.
+
+Examples:
+- `This file is a controller / public API surface; all members are reachable from outside the analyzed scope by convention.`
+- `This is a DTO / record type; every member is part of the data contract, not dead code.`
+- `This file contains only configuration; assignments are read by the framework via reflection.`
+- `Every declared symbol has at least one in-file reference; nothing in the visible scope is unreachable.`
+
 When you have nothing more to report, write `<done />` on its own line.

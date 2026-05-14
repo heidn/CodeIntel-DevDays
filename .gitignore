@@ -40,7 +40,19 @@ Thumbs.db
 *.log
 logs/
 
+# Playwright demo artifacts
+demo/playwright-report/
+demo/playwright-videos/
+demo/test-results/
+
 # Claude Code — shared team config is .claude/settings.json (committed)
 # Per-user overrides and local state are gitignored
 .claude/settings.local.json
 .claude/local/
+
+# Per-machine appsettings overrides — committed appsettings.json reflects the
+# home-laptop CPU-only / Vulkan baseline. The work ZBook uses a local
+# appsettings.Development.json to bump GPU layers + context budget. See the
+# "Per-machine overrides" section in CLAUDE.md. The .example template is
+# committed for reference; the real Development.json is not.
+src/CodeIntel.Server/appsettings.Development.json

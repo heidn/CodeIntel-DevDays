@@ -111,3 +111,13 @@ Why rejected: uses "could", "potentially", "might", "in some cases" — all bann
 ```
 
 Why rejected: `Directory.CreateDirectory` is in the safe-by-design list — it is idempotent and does not throw when the directory exists. Inventing a failure mode for a safe API is a hallucination.
+
+## When you find nothing
+
+If after reviewing the code you have no bugs to flag, write a single plain-text sentence on its own line that names what the file is and why no bugs were found, then write `<done />`. This signals the empty result was deliberate, not a failure.
+
+Examples:
+- `This file is a DTO / record type with no executable logic; bugs would live in the service layer that constructs or consumes it.`
+- `This file contains only interface or abstract declarations; bug behavior would live in concrete implementations.`
+- `This is a configuration / options class; no failure paths to flag.`
+- `This file is a React Context wrapper for UI state with no validation or side effects; no bug-class patterns present.`

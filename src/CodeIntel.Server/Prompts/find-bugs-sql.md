@@ -128,3 +128,13 @@ Why rejected: `COMMIT` inside a routine declared `PRAGMA AUTONOMOUS_TRANSACTION`
 ```
 
 Why rejected: implicit cursors (`FOR rec IN (SELECT ...) LOOP`) are auto-closed by Oracle. Only explicit `OPEN ... FETCH` patterns can leak.
+
+## When you find nothing
+
+If after reviewing the PL/SQL you have no bugs to flag, write a single plain-text sentence on its own line that names what the file is and why no bugs were found, then write `<done />`. This signals the empty result was deliberate, not a failure.
+
+Examples:
+- `This file is a CREATE-OR-REPLACE VIEW with no procedural logic; no failure paths to flag.`
+- `This is a small DDL script with only column definitions; no executable PL/SQL.`
+- `This proc only logs and forwards parameters to another routine; bugs would live downstream.`
+- `Every cursor is closed on every exit path and every exception handler re-raises or logs; the visible patterns are safe-by-design.`

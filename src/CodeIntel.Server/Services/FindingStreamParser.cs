@@ -30,6 +30,11 @@ public class FindingStreamParser
     // Count of unclosed <finding> opens we've seen (open - close, excluding completed pairs).
     private int _openFindingCount;
     private int _completedOpenCount;
+    // When >= 0, we've consumed a `<finding>` opener at this position but its
+    // `</finding>` closer hasn't streamed in yet. The next Append must resume
+    // looking for the closer from past the opener body, NOT scan for the next
+    // opener (which would orphan the pending finding forever).
+    private int _pendingOpenBodyStart = -1;
 
     public IReadOnlyList<Finding> Findings => _findings;
     public IReadOnlyList<ContextRequest> ContextRequests => _contextRequests;
@@ -55,6 +60,31 @@ public class FindingStreamParser
 
         _buffer.Append(chunk);
         var emitted = new List<Finding>();
+
+        // If we already saw a `<finding>` opener but its closer hadn't streamed in
+        // yet, look for the closer FIRST. Without this, the scanner below would
+        // resume from past the opener and never re-match it, orphaning every
+        // multi-line finding the model emits across multiple stream chunks.
+        if (_pendingOpenBodyStart >= 0)
+        {
+            var closeIdx = IndexOf(FindingClose, _pendingOpenBodyStart);
+            if (closeIdx < 0) return emitted;
+
+            _completedOpenCount++;
+            var json = Slice(_pendingOpenBodyStart, closeIdx).Trim();
+            var (finding, error) = TryParseFinding(json);
+            if (finding != null)
+            {
+                _findings.Add(finding);
+                emitted.Add(finding);
+            }
+            else
+            {
+                _malformed.Add(new ParseFailure(Truncate(json, 200), error ?? "(unknown)"));
+            }
+            _scanPos = closeIdx + FindingClose.Length;
+            _pendingOpenBodyStart = -1;
+        }
 
         while (true)
         {
@@ -82,8 +112,9 @@ public class FindingStreamParser
                 var closeIdx = IndexOf(FindingClose, bodyStart);
                 if (closeIdx < 0)
                 {
-                    // Closing tag hasn't streamed in yet. Park the scanner just past
-                    // the opener so the next chunk can pick up where we left off.
+                    // Closing tag hasn't streamed in yet. Remember the body start so
+                    // the next Append resumes from here looking for the closer.
+                    _pendingOpenBodyStart = bodyStart;
                     _scanPos = bodyStart;
                     break;
                 }

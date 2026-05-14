@@ -80,7 +80,11 @@ export default function App() {
         case 'completed':
           routeShared((kind) => kind === 'trace'
             ? traceActions.complete(event.payload.durationSeconds)
-            : analysisActions.complete(event.payload.durationSeconds));
+            : analysisActions.complete(event.payload.durationSeconds, {
+                incompleteFindings: event.payload.incompleteFindings ?? 0,
+                malformedFindings:  event.payload.malformedFindings  ?? 0,
+                reachedDone:        event.payload.reachedDone        ?? true,
+              }));
           break;
         case 'error':
           routeShared((kind) => kind === 'trace'

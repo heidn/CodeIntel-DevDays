@@ -96,11 +96,22 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
                 return;
             }
 
+            await group.SendAsync("AnalysisEvent",
+                AnalysisEvents.Status($"Building context from {request.SelectedFilePaths.Count} file(s)..."), ct);
+
+            // Pre-flight: figure out whether any selected file needs chunking. Returns
+            // a 1-element list (no chunking) for the common case. Done BEFORE the cache
+            // lookup so the lookup key matches what the write key will be — chunked and
+            // non-chunked runs of identical content keep distinct cache entries.
+            var chunkPlan = await PlanChunksAsync(request, ct);
+
             // F2: cache lookup — short-circuit if the same preset has already run against
-            // the same file contents with the same model.
+            // the same file contents with the same model AND the same chunking decision.
             var precomputedHash = await ContentHasher.HashFilesAsync(
                 _workspaceService, request.WorkspaceId, request.SelectedFilePaths, ct);
-            var cached = await _resultCache.LookupAsync(request, precomputedHash, _llm.ModelName, ct);
+            var cached = await _resultCache.LookupAsync(
+                request, precomputedHash, _llm.ModelName, ct,
+                chunkVersion: chunkPlan.IsChunked ? FileChunker.Version : null);
             if (cached is not null)
             {
                 await group.SendAsync("AnalysisEvent",
@@ -113,112 +124,188 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
                     AnalysisEvents.Completed(analysisId, 0, cached.Findings.Count), CancellationToken.None);
                 return;
             }
-
-            await group.SendAsync("AnalysisEvent",
-                AnalysisEvents.Status($"Building context from {request.SelectedFilePaths.Count} file(s)..."), ct);
-
-            var context = await _contextBuilder.BuildAsync(
-                request.WorkspaceId,
-                request.SelectedFilePaths,
-                _analysisOptions.MaxContextTokens,
-                ct);
-
-            analyzedRelativePaths = context.Files.Select(f => f.RelativePath).ToList();
-            contextTokens = context.EstimatedTokens;
-
-            await group.SendAsync("AnalysisEvent",
-                AnalysisEvents.Started(context.EstimatedTokens, context.Files.Count), ct);
-
-            var skills = _skillRouter.RouteSkills(context);
-            if (skills.Count > 0)
+            if (chunkPlan.IsChunked)
             {
                 await group.SendAsync("AnalysisEvent",
-                    AnalysisEvents.Status($"Skills active: {string.Join(", ", skills)}"), ct);
-                _logger.LogInformation("Skill router fired: {Skills}", string.Join(",", skills));
+                    AnalysisEvents.Status(
+                        $"{Path.GetFileName(chunkPlan.ChunkedFilePath)} is too large for one pass; " +
+                        $"splitting into {chunkPlan.Chunks.Count} chunks. Expect roughly {chunkPlan.Chunks.Count}× normal duration."),
+                    ct);
             }
 
-            var history = new List<ConversationTurn>();
-            string prompt = _promptService.BuildAgentPrompt(request, context);
+            // Track parser anomalies across ALL chunks/iterations so we can refuse to
+            // cache runs that produced incomplete/malformed findings or never reached
+            // <done/>. Without this, a truncated run overwrites a healthy cached
+            // result and future cache hits silently serve the broken output.
+            var totalIncompleteFindings = 0;
+            var totalMalformedFindings = 0;
+            var lastIterationReachedDone = false;
+            var chunkSummaries = new List<string>();   // one line per completed chunk, fed forward
+            var firstChunkEmittedStarted = false;
 
-            var maxIters = Math.Max(1, _analysisOptions.MaxAgenticIterations);
-
-            for (int iteration = 0; iteration < maxIters; iteration++)
+            for (var chunkIdx = 0; chunkIdx < chunkPlan.Chunks.Count; chunkIdx++)
             {
-                await group.SendAsync("AnalysisEvent",
-                    AnalysisEvents.IterationStarted(iteration + 1, maxIters), ct);
+                ct.ThrowIfCancellationRequested();
 
-                await group.SendAsync("AnalysisEvent",
-                    AnalysisEvents.Status(iteration == 0
-                        ? $"Streaming first pass through {_llm.ModelName} ({_llm.BackendName}, ~{contextTokens:N0} tokens)..."
-                        : $"Pass {iteration + 1}/{maxIters} — incorporating new context and continuing analysis..."), ct);
-
-                var parser = new FindingStreamParser();
-                var iterationOutput = new StringBuilder();
-
-                // Reset idle watchdog at the start of each iteration.
-                idleCts.CancelAfter(TimeSpan.FromSeconds(_analysisOptions.IdleTokenTimeoutSeconds));
-
-                await foreach (var token in _llm.StreamAsync(prompt, ct))
+                CodeContext context;
+                ChunkContext? chunkInfo = null;
+                if (chunkPlan.IsChunked)
                 {
-                    // Token arrived — reset idle watchdog.
+                    var range = chunkPlan.Chunks[chunkIdx];
+                    chunkInfo = new ChunkContext(
+                        Index: chunkIdx + 1,
+                        Total: chunkPlan.Chunks.Count,
+                        FilePath: chunkPlan.ChunkedFilePath!,
+                        StartLine: range.StartLine,
+                        EndLine: range.EndLine,
+                        TotalLines: chunkPlan.TotalLines,
+                        CarryOverNotes: chunkSummaries.Count == 0 ? null : string.Join("\n", chunkSummaries));
+
+                    await group.SendAsync("AnalysisEvent",
+                        AnalysisEvents.Status(
+                            $"Analysing part {chunkInfo.Index} of {chunkInfo.Total}: " +
+                            $"lines {range.StartLine}–{range.EndLine} of {Path.GetFileName(chunkPlan.ChunkedFilePath)}"),
+                        ct);
+
+                    context = await _contextBuilder.BuildChunkAsync(
+                        request.WorkspaceId,
+                        request.SelectedFilePaths,
+                        chunkPlan.ChunkedFilePath!,
+                        range,
+                        chunkPlan.TotalLines,
+                        _analysisOptions.MaxContextTokens,
+                        ct);
+                }
+                else
+                {
+                    context = await _contextBuilder.BuildAsync(
+                        request.WorkspaceId,
+                        request.SelectedFilePaths,
+                        _analysisOptions.MaxContextTokens,
+                        ct);
+                }
+
+                if (!firstChunkEmittedStarted)
+                {
+                    analyzedRelativePaths = context.Files.Select(f => f.RelativePath).ToList();
+                    contextTokens = context.EstimatedTokens;
+                    await group.SendAsync("AnalysisEvent",
+                        AnalysisEvents.Started(context.EstimatedTokens, context.Files.Count), ct);
+                    firstChunkEmittedStarted = true;
+                }
+
+                var skills = _skillRouter.RouteSkills(context);
+                if (skills.Count > 0)
+                {
+                    await group.SendAsync("AnalysisEvent",
+                        AnalysisEvents.Status($"Skills active: {string.Join(", ", skills)}"), ct);
+                    _logger.LogInformation("Skill router fired: {Skills}", string.Join(",", skills));
+                }
+
+                var history = new List<ConversationTurn>();
+                string prompt = _promptService.BuildAgentPrompt(request, context, chunkInfo);
+
+                // Chunked runs run a single pass per chunk: the carry-over notes already
+                // give the model cross-chunk awareness, and multiplying agentic iterations
+                // by chunk count blows up wall-clock without proportional finding gains
+                // (3 chunks × 3 iters = 9 LLM calls vs 3 originally for the same file).
+                var maxIters = chunkPlan.IsChunked ? 1 : Math.Max(1, _analysisOptions.MaxAgenticIterations);
+                var findingsBeforeChunk = allFindings.Count;
+
+                for (int iteration = 0; iteration < maxIters; iteration++)
+                {
+                    await group.SendAsync("AnalysisEvent",
+                        AnalysisEvents.IterationStarted(iteration + 1, maxIters), ct);
+
+                    var passLabel = chunkPlan.IsChunked
+                        ? $"part {chunkIdx + 1}/{chunkPlan.Chunks.Count}, pass {iteration + 1}/{maxIters}"
+                        : (iteration == 0 ? "first pass" : $"pass {iteration + 1}/{maxIters}");
+
+                    await group.SendAsync("AnalysisEvent",
+                        AnalysisEvents.Status(iteration == 0 && !chunkPlan.IsChunked
+                            ? $"Streaming first pass through {_llm.ModelName} ({_llm.BackendName}, ~{context.EstimatedTokens:N0} tokens)..."
+                            : $"Streaming {passLabel} through {_llm.ModelName} (~{context.EstimatedTokens:N0} tokens)..."), ct);
+
+                    var parser = new FindingStreamParser();
+                    var iterationOutput = new StringBuilder();
+
                     idleCts.CancelAfter(TimeSpan.FromSeconds(_analysisOptions.IdleTokenTimeoutSeconds));
 
-                    iterationOutput.Append(token);
-                    await group.SendAsync("AnalysisEvent", AnalysisEvents.Token(token), ct);
-                    foreach (var finding in parser.Append(token))
+                    await foreach (var token in _llm.StreamAsync(prompt, ct))
                     {
-                        allFindings.Add(finding);
-                        await group.SendAsync("AnalysisEvent", AnalysisEvents.Finding(finding), ct);
+                        idleCts.CancelAfter(TimeSpan.FromSeconds(_analysisOptions.IdleTokenTimeoutSeconds));
+
+                        iterationOutput.Append(token);
+                        await group.SendAsync("AnalysisEvent", AnalysisEvents.Token(token), ct);
+                        foreach (var finding in parser.Append(token))
+                        {
+                            allFindings.Add(finding);
+                            await group.SendAsync("AnalysisEvent", AnalysisEvents.Finding(finding), ct);
+                        }
+                        if (parser.IsDone) break;
                     }
-                    if (parser.IsDone) break;
-                }
 
-                var iterationText = iterationOutput.ToString();
-                rawOutputBuilder.Append(iterationText);
+                    var iterationText = iterationOutput.ToString();
+                    rawOutputBuilder.Append(iterationText);
 
-                var contextRequests = parser.ContextRequests;
-                _logger.LogInformation("Iteration {N}: {Findings} findings, {Requests} context requests",
-                    iteration + 1, parser.Findings.Count, contextRequests.Count);
+                    var contextRequests = parser.ContextRequests;
+                    _logger.LogInformation(
+                        "Chunk {C}/{Tot} iter {N}: {Findings} findings, {Requests} context requests",
+                        chunkIdx + 1, chunkPlan.Chunks.Count,
+                        iteration + 1, parser.Findings.Count, contextRequests.Count);
 
-                if (parser.MalformedFindings.Count > 0)
-                {
-                    var firstError = parser.MalformedFindings[0].Error;
-                    _logger.LogWarning(
-                        "Iteration {N}: parser dropped {Count} malformed <finding> JSON block(s). First error: {Error}",
-                        iteration + 1, parser.MalformedFindings.Count, firstError);
-                }
-                if (parser.IncompleteFindingCount > 0)
-                {
-                    _logger.LogWarning(
-                        "Iteration {N}: parser dropped {Count} incomplete <finding> tag(s) (no closing tag in stream). Model likely truncated mid-finding.",
-                        iteration + 1, parser.IncompleteFindingCount);
-                }
+                    if (parser.MalformedFindings.Count > 0)
+                    {
+                        _logger.LogWarning(
+                            "Chunk {C}/{Tot} iter {N}: parser dropped {Count} malformed <finding> JSON block(s). First error: {Error}",
+                            chunkIdx + 1, chunkPlan.Chunks.Count, iteration + 1,
+                            parser.MalformedFindings.Count, parser.MalformedFindings[0].Error);
+                    }
+                    if (parser.IncompleteFindingCount > 0)
+                    {
+                        _logger.LogWarning(
+                            "Chunk {C}/{Tot} iter {N}: parser dropped {Count} incomplete <finding> tag(s).",
+                            chunkIdx + 1, chunkPlan.Chunks.Count, iteration + 1, parser.IncompleteFindingCount);
+                    }
 
-                if (contextRequests.Count == 0 || parser.IsDone)
-                    break;
+                    totalIncompleteFindings += parser.IncompleteFindingCount;
+                    totalMalformedFindings  += parser.MalformedFindings.Count;
+                    lastIterationReachedDone = parser.IsDone;
 
-                foreach (var cr in contextRequests)
+                    if (contextRequests.Count == 0 || parser.IsDone)
+                        break;
+
+                    foreach (var cr in contextRequests)
+                        await group.SendAsync("AnalysisEvent",
+                            AnalysisEvents.ContextRequested(cr.Type.ToString(), cr.Target), ct);
+
+                    var requestSummary = string.Join(", ",
+                        contextRequests.Take(3).Select(c => $"{c.Type}={c.Target}"));
+                    if (contextRequests.Count > 3) requestSummary += $", +{contextRequests.Count - 3} more";
                     await group.SendAsync("AnalysisEvent",
-                        AnalysisEvents.ContextRequested(cr.Type.ToString(), cr.Target), ct);
+                        AnalysisEvents.Status($"Fetching context: {requestSummary}"), ct);
 
-                var requestSummary = string.Join(", ",
-                    contextRequests.Take(3).Select(c => $"{c.Type}={c.Target}"));
-                if (contextRequests.Count > 3) requestSummary += $", +{contextRequests.Count - 3} more";
-                await group.SendAsync("AnalysisEvent",
-                    AnalysisEvents.Status($"Fetching context: {requestSummary}"), ct);
+                    var fulfillments = new List<ContextFulfillment>();
+                    foreach (var cr in contextRequests)
+                    {
+                        var fulfillment = await _contextHandler.FulfillAsync(request.WorkspaceId, cr, ct);
+                        fulfillments.Add(fulfillment);
+                        await group.SendAsync("AnalysisEvent",
+                            AnalysisEvents.ContextFulfilled(cr.Type.ToString(), cr.Target, fulfillment.Found), ct);
+                    }
 
-                var fulfillments = new List<ContextFulfillment>();
-                foreach (var cr in contextRequests)
-                {
-                    var fulfillment = await _contextHandler.FulfillAsync(request.WorkspaceId, cr, ct);
-                    fulfillments.Add(fulfillment);
-                    await group.SendAsync("AnalysisEvent",
-                        AnalysisEvents.ContextFulfilled(cr.Type.ToString(), cr.Target, fulfillment.Found), ct);
+                    history.Add(new ConversationTurn("assistant", iterationText));
+                    prompt = _promptService.BuildContinuationPrompt(request, context, history, fulfillments, chunkInfo);
+                    _logger.LogDebug("Continuation prompt length: {Len} chars", prompt.Length);
                 }
 
-                history.Add(new ConversationTurn("assistant", iterationText));
-                prompt = _promptService.BuildContinuationPrompt(request, context, history, fulfillments);
-                _logger.LogDebug("Continuation prompt length: {Len} chars", prompt.Length);
+                if (chunkPlan.IsChunked && chunkInfo is not null)
+                {
+                    var emittedHere = allFindings.Count - findingsBeforeChunk;
+                    chunkSummaries.Add(
+                        $"- Lines {chunkInfo.StartLine}–{chunkInfo.EndLine} reviewed " +
+                        $"({emittedHere} finding{(emittedHere == 1 ? "" : "s")} emitted).");
+                }
             }
 
             sw.Stop();
@@ -249,16 +336,43 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
             );
             _store.Save(result);
 
-            // Record the cache entry once persistence has the new analysis on file.
-            var cacheKey = ContentHasher.BuildCacheKey(request.PresetKey, _llm.ModelName, contentHash, _analysisOptions.MaxContextTokens);
-            if (cacheKey is not null)
+            // Record the cache entry once persistence has the new analysis on file —
+            // but ONLY if the run looks healthy. A run that experienced parser drops
+            // or never reached <done/> may have been truncated by the response-token
+            // budget mid-finding; caching it would let future identical-content runs
+            // serve the broken output instantly and overwrite a previously healthy
+            // cache entry.
+            var runLooksHealthy = totalIncompleteFindings == 0
+                                  && totalMalformedFindings == 0
+                                  && lastIterationReachedDone;
+            var cacheKey = ContentHasher.BuildCacheKey(
+                request.PresetKey,
+                _llm.ModelName,
+                contentHash,
+                _analysisOptions.MaxContextTokens,
+                chunkPlan.IsChunked ? FileChunker.Version : null);
+            if (cacheKey is not null && runLooksHealthy)
             {
                 try { await _resultCache.RememberAsync(cacheKey, analysisId, CancellationToken.None); }
                 catch (Exception ex) { _logger.LogDebug(ex, "Cache write failed (non-fatal)"); }
             }
+            else if (cacheKey is not null)
+            {
+                _logger.LogWarning(
+                    "Skipping result cache write for {Id}: incomplete={Incomplete} malformed={Malformed} reachedDone={Done}. " +
+                    "Any prior healthy cache entry for this content is preserved.",
+                    analysisId, totalIncompleteFindings, totalMalformedFindings, lastIterationReachedDone);
+            }
 
             await group.SendAsync("AnalysisEvent",
-                AnalysisEvents.Completed(analysisId, sw.Elapsed.TotalSeconds, aggregated.Count), CancellationToken.None);
+                AnalysisEvents.Completed(
+                    analysisId,
+                    sw.Elapsed.TotalSeconds,
+                    aggregated.Count,
+                    incompleteFindings: totalIncompleteFindings,
+                    malformedFindings: totalMalformedFindings,
+                    reachedDone: lastIterationReachedDone),
+                CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
@@ -298,6 +412,73 @@ public class InvestigationOrchestrator : IAnalysisOrchestrator
             _cancelRegistry.Remove(analysisId);
             userCts.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Inputs into the chunking decision. <see cref="Chunks"/> is always non-empty; if
+    /// <see cref="IsChunked"/> is false it contains a single sentinel range covering
+    /// the whole file set and the caller should use the non-chunked build path.
+    /// </summary>
+    private record ChunkPlan(
+        bool IsChunked,
+        string? ChunkedFilePath,
+        int TotalLines,
+        IReadOnlyList<ChunkRange> Chunks);
+
+    private static readonly ChunkPlan SingleNonChunkedPass =
+        new(false, null, 0, new[] { new ChunkRange(0, 0, "") });
+
+    private async Task<ChunkPlan> PlanChunksAsync(AnalysisRequest request, CancellationToken ct)
+    {
+        if (!_analysisOptions.EnableAutoChunking) return SingleNonChunkedPass;
+        if (request.SelectedFilePaths.Count == 0)   return SingleNonChunkedPass;
+
+        // Read every selected file once, find the largest oversize candidate.
+        // Reserve a portion of the budget for the carry-over notes block + a small
+        // companion-file allowance so chunked builds still have room for siblings.
+        var perChunkBudget = Math.Max(
+            500,
+            _analysisOptions.MaxContextTokens - _analysisOptions.ChunkCarryOverReserveTokens);
+
+        string? oversizedPath = null;
+        string? oversizedContent = null;
+        var biggestOver = 0;
+
+        foreach (var path in request.SelectedFilePaths)
+        {
+            ct.ThrowIfCancellationRequested();
+            string content;
+            try { content = await _workspaceService.ReadFileAsync(request.WorkspaceId, path, ct); }
+            catch { continue; }
+
+            var tokens = (int)Math.Ceiling(content.Length * _analysisOptions.TokensPerCharEstimate);
+            if (tokens > perChunkBudget && tokens > biggestOver)
+            {
+                biggestOver = tokens;
+                oversizedPath = path;
+                oversizedContent = content;
+            }
+        }
+
+        if (oversizedPath is null || oversizedContent is null)
+            return SingleNonChunkedPass;
+
+        var chunks = FileChunker.ComputeChunks(
+            oversizedContent,
+            Path.GetExtension(oversizedPath),
+            perChunkBudget,
+            _analysisOptions.TokensPerCharEstimate,
+            _analysisOptions.MaxChunksPerFile);
+
+        if (chunks is null || chunks.Count <= 1)
+            return SingleNonChunkedPass;
+
+        var totalLines = oversizedContent.Count(c => c == '\n') + 1;
+        _logger.LogInformation(
+            "Chunking {Path}: {TotalTokens} tokens > budget {Budget} → {Chunks} chunks (algorithm {Ver})",
+            oversizedPath, biggestOver, perChunkBudget, chunks.Count, FileChunker.Version);
+
+        return new ChunkPlan(true, oversizedPath, totalLines, chunks);
     }
 
     private (string reason, string message) DescribeCancellation(

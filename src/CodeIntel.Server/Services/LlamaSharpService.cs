@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using CodeIntel.Server.Models;
 using LLama;
 using LLama.Common;
-using LLama.Native;
 using LLama.Sampling;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Hosting;
@@ -136,21 +135,27 @@ public sealed class LlamaSharpService : ILlmService, IDisposable
             return (Make(0), "cpu", null);
         }
 
-        // Auto — attempt GPU (CUDA preferred, then Vulkan), fall back to CPU on failure.
+        // Auto or Vulkan — attempt GPU, fall back to CPU on failure.
         int gpuLayers = _options.GpuLayerCount > 0 ? _options.GpuLayerCount : 20;
         LLamaWeights? probe = null;
         try
         {
-            // NativeLibraryConfig is set in Program.cs before startup.
             var p = Make(gpuLayers);
+            // Probe load confirms the GPU path works. We keep the weights — the
+            // outer InitializeAsync will reuse them instead of paying the disk
+            // cost a second time.
             probe = LLamaWeights.LoadFromFile(p);
-            _logger.LogInformation("Backend: gpu, GPU layers: {Layers}", gpuLayers);
-            return (p, "cuda", probe);
+            _logger.LogInformation("Backend: vulkan, GPU layers: {Layers}", gpuLayers);
+            return (p, "vulkan", probe);
         }
         catch (Exception ex)
         {
             probe?.Dispose();
-            _logger.LogWarning("GPU unavailable ({Reason}), falling back to CPU", ex.Message);
+            if (_options.Backend == LlmBackend.Vulkan)
+                throw new InvalidOperationException(
+                    $"Vulkan backend explicitly requested but failed to load: {ex.Message}", ex);
+
+            _logger.LogWarning("Vulkan unavailable ({Reason}), falling back to CPU", ex.Message);
             return (Make(0), "cpu", null);
         }
     }

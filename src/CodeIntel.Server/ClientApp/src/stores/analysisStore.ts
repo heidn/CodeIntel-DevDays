@@ -27,6 +27,15 @@ interface AnalysisState {
   cancelReason: CancelReason | null;
   analyzedFilePaths: string[];
 
+  // run-health signals from the orchestrator's `completed` event — non-zero
+  // counts (or reachedDone === false) mean the run produced degraded output:
+  // a finding was truncated mid-stream by the response-token cap, a JSON parse
+  // failed, or the model never wrote `<done/>`. ResultsView surfaces this so
+  // the user knows "0 findings" might really mean "1 finding got cut off".
+  incompleteFindings: number;
+  malformedFindings: number;
+  reachedDone: boolean;
+
   // timing
   runStartedAt: number | null;   // epoch ms — set when starting, cleared on terminal state
   lastTokenAt: number | null;    // epoch ms of most recent token, for idle warnings
@@ -43,7 +52,7 @@ interface AnalysisState {
   appendToken: (text: string) => void;
   setStarted: (contextTokens: number, fileCount: number) => void;
   addFinding: (finding: Finding) => void;
-  complete: (durationSeconds: number) => void;
+  complete: (durationSeconds: number, health?: { incompleteFindings: number; malformedFindings: number; reachedDone: boolean }) => void;
   error: (message: string) => void;
   cancelled: (reason: CancelReason, message: string) => void;
   requestCancel: () => Promise<void>;
@@ -62,6 +71,9 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
   errorMessage: null,
   cancelReason: null,
   analyzedFilePaths: [],
+  incompleteFindings: 0,
+  malformedFindings: 0,
+  reachedDone: true,
   runStartedAt: null,
   lastTokenAt: null,
   selectedPresetKey: null,
@@ -83,6 +95,9 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
       errorMessage: null,
       cancelReason: null,
       analyzedFilePaths: filePaths,
+      incompleteFindings: 0,
+      malformedFindings: 0,
+      reachedDone: true,
       runStartedAt: Date.now(),
       lastTokenAt: null,
     }),
@@ -106,8 +121,15 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
   addFinding: (finding) =>
     set((state) => ({ findings: [...state.findings, finding] })),
 
-  complete: (durationSeconds) =>
-    set({ runState: 'completed', durationSeconds, statusMessage: '' }),
+  complete: (durationSeconds, health) =>
+    set({
+      runState: 'completed',
+      durationSeconds,
+      statusMessage: '',
+      incompleteFindings: health?.incompleteFindings ?? 0,
+      malformedFindings:  health?.malformedFindings  ?? 0,
+      reachedDone:        health?.reachedDone        ?? true,
+    }),
 
   error: (message) =>
     set({ runState: 'error', errorMessage: message, statusMessage: '' }),
@@ -145,6 +167,9 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
       errorMessage: null,
       cancelReason: null,
       analyzedFilePaths: [],
+      incompleteFindings: 0,
+      malformedFindings: 0,
+      reachedDone: true,
       runStartedAt: null,
       lastTokenAt: null,
     }),

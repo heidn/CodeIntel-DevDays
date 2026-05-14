@@ -86,7 +86,7 @@ export type AnalysisEvent =
   | { type: 'token'; payload: { text: string } }
   | { type: 'finding'; payload: Finding }
   | { type: 'status'; payload: { message: string } }
-  | { type: 'completed'; payload: { analysisId: string; durationSeconds: number; findingCount: number } }
+  | { type: 'completed'; payload: { analysisId: string; durationSeconds: number; findingCount: number; incompleteFindings?: number; malformedFindings?: number; reachedDone?: boolean } }
   | { type: 'error'; payload: { message: string } }
   | { type: 'cancelled'; payload: { reason: 'user' | 'timeout' | 'idle' | 'unknown'; message: string } }
   | { type: 'iterationStarted'; payload: { iteration: number; maxIterations: number } }

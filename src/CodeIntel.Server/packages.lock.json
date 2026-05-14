@@ -38,14 +38,14 @@
         "resolved": "0.27.0",
         "contentHash": "fZOfnsWKx/kaOqCMSkZ2w5ww++/YGq56T8PWst0KjtmXQBthNAuE11HIaxMK5TBD0EWqoCxqlC8oVCOssF4+MQ=="
       },
-      "LLamaSharp.Backend.Cuda12": {
+      "LLamaSharp.Backend.Vulkan": {
         "type": "Direct",
         "requested": "[0.27.0, )",
         "resolved": "0.27.0",
-        "contentHash": "FLu293GfDc6mHReop07CmtQKwu/EKt0kRd2Y1vo9iyvwhlWA8ApPi5f3t4BH0KYjP3df/Xess8JI2z1yyjfFWg==",
+        "contentHash": "2arTT3Hlcq+ih8kcQBFRaUtvzPU51UROnHhjwr9wJEygBYG1+ls5SM6qS4YH1OpbczYbzaALY/LjqULhZ5mzUQ==",
         "dependencies": {
-          "LLamaSharp.Backend.Cuda12.Linux": "0.27.0",
-          "LLamaSharp.Backend.Cuda12.Windows": "0.27.0"
+          "LLamaSharp.Backend.Vulkan.Linux": "0.27.0",
+          "LLamaSharp.Backend.Vulkan.Windows": "0.27.0"
         }
       },
       "MessagePack": {
@@ -226,18 +226,18 @@
         "resolved": "2.14.1",
         "contentHash": "lQKvtaTDOXnoVJ20ibTuSIOf2i0uO0MPbDhd1jm238I+U/2ZnRENj0cktKZhtchBMtCUSRQ5v4xBCUbKNmyVMw=="
       },
-      "LLamaSharp.Backend.Cuda12.Linux": {
+      "LLamaSharp.Backend.Vulkan.Linux": {
         "type": "Transitive",
         "resolved": "0.27.0",
-        "contentHash": "bxVMBsX68jTfcOBKRgkgMWdHZcesrVMKFF/YPo0vWk6Zul6ptW9E+4MV3ydRNuHvF6k8wAzYbq8asMHDr0sK6Q==",
+        "contentHash": "lwKvRq4mFBxUtSlPV5cRFnMauK/mwmkRqS1QJa5CXJ031hSkGSu2uVqoOcEiffUdHQE9Oi5MTdD6PYck7061uA==",
         "dependencies": {
           "LLamaSharp.Backend.Cpu": "0.27.0"
         }
       },
-      "LLamaSharp.Backend.Cuda12.Windows": {
+      "LLamaSharp.Backend.Vulkan.Windows": {
         "type": "Transitive",
         "resolved": "0.27.0",
-        "contentHash": "JNxjyN1UmGMDduQkpYyAws9ou+OgN5hFF+9MIkPIU6tkPwZ2zX63wYL2AachalZ2ff4Hob5ZK48Nay8T2tARIQ==",
+        "contentHash": "eq2LNJLJ+rJmfFk5rSgFxV8Yer4ZGxNuYmGApUEk5illaj15hwYBmo2cWHq7UKVkbMQ5KZAGq5NkS3LJeMSiZw==",
         "dependencies": {
           "LLamaSharp.Backend.Cpu": "0.27.0"
         }

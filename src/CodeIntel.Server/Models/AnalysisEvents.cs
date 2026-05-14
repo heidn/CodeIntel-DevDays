@@ -20,8 +20,14 @@ public static class AnalysisEvents
     public static AnalysisEvent Status(string message) =>
         new("status", new { message });
 
-    public static AnalysisEvent Completed(Guid analysisId, double durationSeconds, int findingCount) =>
-        new("completed", new { analysisId, durationSeconds, findingCount });
+    public static AnalysisEvent Completed(
+        Guid analysisId,
+        double durationSeconds,
+        int findingCount,
+        int incompleteFindings = 0,
+        int malformedFindings = 0,
+        bool reachedDone = true) =>
+        new("completed", new { analysisId, durationSeconds, findingCount, incompleteFindings, malformedFindings, reachedDone });
 
     public static AnalysisEvent Error(string message) =>
         new("error", new { message });

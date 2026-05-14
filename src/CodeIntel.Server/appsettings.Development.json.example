@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Per-machine override template for the work ZBook (CUDA + 14B model).",
+    "Copy to appsettings.Development.json (gitignored). ASP.NET Core merges this on top of",
+    "appsettings.json automatically when ASPNETCORE_ENVIRONMENT=Development (the default for",
+    "`dotnet run`). Bumps below assume the local csproj has been edited to swap",
+    "LLamaSharp.Backend.Vulkan -> LLamaSharp.Backend.Cuda12 and CUDA 12.8 toolkit DLLs",
+    "(cudart64_12, cublas64_12, cublasLt64_12) are on PATH or copied next to llama.dll.",
+    "See CLAUDE.md 'Per-machine overrides' for the full work-laptop bring-up checklist.",
+    "After editing this file delete data/codeintel.db so the result_cache doesn't replay",
+    "results that were generated under the old MaxContextTokens budget."
+  ],
+  "Llm": {
+    "ContextSize": 16384,
+    "GpuLayerCount": 20,
+    "MaxResponseTokens": 2048,
+    "Threads": 8
+  },
+  "Analysis": {
+    "MaxContextTokens": 12000
+  },
+  "Lsp": {
+    "Enabled": false
+  }
+}

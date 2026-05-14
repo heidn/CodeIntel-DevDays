@@ -4,22 +4,7 @@ using CodeIntel.Server.Models;
 using CodeIntel.Server.Services;
 using CodeIntel.Server.Services.LanguageBackends;
 using CodeIntel.Server.Services.LanguageBackends.Lsp;
-using LLama.Native;
 using Serilog;
-
-// Must be configured before ANY LLamaSharp type is accessed Ã¢â‚¬â€ the config seals on first native load.
-var cudaLib = Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native", "cuda12", "llama.dll");
-if (File.Exists(cudaLib))
-{
-    NativeLibraryConfig.LLama.WithLibrary(cudaLib);
-    Console.WriteLine($"[LLamaSharp] Using CUDA native library: {cudaLib}");
-}
-else
-{
-    NativeLibraryConfig.All.WithCuda();
-    NativeLibraryConfig.All.WithAutoFallback();
-    Console.WriteLine("[LLamaSharp] CUDA library not found at expected path, using auto-detection");
-}
 
 var builder = WebApplication.CreateBuilder(args);
 

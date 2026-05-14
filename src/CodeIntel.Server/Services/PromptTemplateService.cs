@@ -12,12 +12,13 @@ public interface IPromptTemplateService
 {
     IReadOnlyList<PresetInfo> GetPresets();
     string BuildPrompt(AnalysisRequest request, CodeContext context);
-    string BuildAgentPrompt(AnalysisRequest request, CodeContext context);
+    string BuildAgentPrompt(AnalysisRequest request, CodeContext context, ChunkContext? chunk = null);
     string BuildContinuationPrompt(
         AnalysisRequest request,
         CodeContext initialContext,
         IReadOnlyList<ConversationTurn> history,
-        IReadOnlyList<ContextFulfillment> fulfillments);
+        IReadOnlyList<ContextFulfillment> fulfillments,
+        ChunkContext? chunk = null);
 }
 
 public class PromptTemplateService : IPromptTemplateService
@@ -95,7 +96,7 @@ public class PromptTemplateService : IPromptTemplateService
         throw new InvalidOperationException($"Unknown preset: {presetKey}");
     }
 
-    public string BuildAgentPrompt(AnalysisRequest request, CodeContext context)
+    public string BuildAgentPrompt(AnalysisRequest request, CodeContext context, ChunkContext? chunk = null)
     {
         var systemPrompt = BuildAgentSystemPrompt(context.Language)
             + (_skillRouter?.BuildAddendum(context) ?? "");
@@ -119,6 +120,11 @@ public class PromptTemplateService : IPromptTemplateService
             sb.Append(BuildSnippetBlock(request.PinnedSnippet));
         }
         sb.Append("\n\n");
+        if (chunk is not null)
+        {
+            sb.Append(BuildChunkHeader(chunk));
+            sb.Append("\n\n");
+        }
         sb.Append(contextBlock);
         sb.Append("\n<|im_end|>\n");
         sb.Append("<|im_start|>assistant\n");
@@ -129,7 +135,8 @@ public class PromptTemplateService : IPromptTemplateService
         AnalysisRequest request,
         CodeContext initialContext,
         IReadOnlyList<ConversationTurn> history,
-        IReadOnlyList<ContextFulfillment> fulfillments)
+        IReadOnlyList<ContextFulfillment> fulfillments,
+        ChunkContext? chunk = null)
     {
         var systemPrompt = BuildAgentSystemPrompt(initialContext.Language)
             + (_skillRouter?.BuildAddendum(initialContext) ?? "");
@@ -153,6 +160,11 @@ public class PromptTemplateService : IPromptTemplateService
             sb.Append(BuildSnippetBlock(request.PinnedSnippet));
         }
         sb.Append("\n\n");
+        if (chunk is not null)
+        {
+            sb.Append(BuildChunkHeader(chunk));
+            sb.Append("\n\n");
+        }
         sb.Append(contextBlock);
         sb.Append("\n<|im_end|>\n");
 
@@ -271,7 +283,7 @@ public class PromptTemplateService : IPromptTemplateService
         foreach (var file in primaryFiles)
         {
             sb.AppendLine();
-            sb.AppendLine($"// FILE: {file.RelativePath}");
+            sb.AppendLine($"// FILE: {file.RelativePath}{FormatChunkSuffix(file)}");
             sb.AppendLine($"```{FileLang(file.RelativePath)}");
             sb.AppendLine(file.Content);
             sb.AppendLine("```");
@@ -309,6 +321,32 @@ public class PromptTemplateService : IPromptTemplateService
             ".java"                                 => "java",
             _                                       => ""
         };
+
+    private static string FormatChunkSuffix(FileContext file) =>
+        file.ChunkStartLine is int start && file.ChunkEndLine is int end && file.ChunkTotalLines is int total
+            ? $" (lines {start}–{end} of {total})"
+            : "";
+
+    private static string BuildChunkHeader(ChunkContext chunk)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("--- CHUNK NOTICE ---");
+        sb.AppendLine(
+            $"You are reviewing part {chunk.Index} of {chunk.Total} of `{Path.GetFileName(chunk.FilePath)}`. " +
+            $"The visible code below covers lines {chunk.StartLine}–{chunk.EndLine} of {chunk.TotalLines} total.");
+        if (!string.IsNullOrWhiteSpace(chunk.CarryOverNotes))
+        {
+            sb.AppendLine();
+            sb.AppendLine("Notes from earlier chunks of this file:");
+            sb.AppendLine(chunk.CarryOverNotes.TrimEnd());
+        }
+        sb.AppendLine();
+        sb.AppendLine("Analyse the visible portion only. Do not re-emit findings that the notes above");
+        sb.AppendLine("already cover. If a finding's evidence spans into the unseen portion, mark it");
+        sb.AppendLine("low-confidence and reference the line you can see.");
+        sb.Append("--- END CHUNK NOTICE ---");
+        return sb.ToString();
+    }
 
     private static string BuildSnippetBlock(PinnedSnippet snippet)
     {

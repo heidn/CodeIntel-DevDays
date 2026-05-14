@@ -4,6 +4,8 @@
 
 ## Status
 
+**Auto-chunking + parser reliability pass shipping (2026-05-13 session).** Files larger than the per-run context budget now split into sequential chunks via [FileChunker](src/CodeIntel.Server/Services/FileChunker.cs) (brace seams for C#/TS/Java, `END;`/`CREATE OR REPLACE` for PL/SQL, line-balanced fallback). Each chunk runs **one** agentic iteration (not three — the carry-over notes already give the model cross-chunk awareness, and multiplying iterations by chunk count was producing 6+ LLM calls where one chunk used to do three). Chunker version is folded into the result-cache key (`chunk-v1`); the cache lookup runs *after* the chunk plan so chunked-write and chunked-lookup keys match (a misalignment caught during end-to-end testing). Smoke-tested on a 6186-token TS file → 2 chunks, 8 unique dead-code findings, healthy cache write, instant cache hit on re-run. A **real pre-existing parser bug** was exposed by chunked runs: when `<finding>` arrived but `</finding>` had not yet streamed, [FindingStreamParser](src/CodeIntel.Server/Services/FindingStreamParser.cs) advanced `_scanPos` past the opener and never re-matched the closer when it eventually arrived — orphaning every multi-line finding. Fix adds a `_pendingOpenBodyStart` field that resumes closer-search on the next Append. Covered by 5 new xunit tests. Also shipped: SignalR group rejoin on `withAutomaticReconnect` (stale-UI fix), degraded-run warning banner with anomaly counts (`incompleteFindings`/`malformedFindings`/`reachedDone` on the `completed` SignalR event), cold-start explainer panel during the silent prompt-eval pause, "When you find nothing" rationale-on-empty instruction in all 5 find-style presets, and an empty-state Alert in ResultsView gated to find-style presets only.
+
 **Phase 3 hardening pass shipping** — most of the items in [docs/REVIEW-ENHANCEMENTS.md](docs/REVIEW-ENHANCEMENTS.md) are now closed. The tool has crossed from "demo on my laptop" toward "team tool on OpenShift": SQLite-backed history + ignored findings + result cache, per-IP rate limiting on run endpoints, LRU caps on workspaces and result rows, ANTLR-backed PL/SQL parser, secret scrubbing before save, cost/time estimator, findings diff + aggregator, content-keyed skill router, VS Code deep-link, trace cycle detection + overload disambiguation + total-node cap, `/healthz` + `/readyz` probes. See [docs/REVIEW-FEATURES.md](docs/REVIEW-FEATURES.md) for the reviewer-oriented walkthrough.
 
 **Language backend abstraction (B1) shipping.** Roslyn, ANTLR, and the new TypeScript LSP client all live behind `ILanguageBackend` in [src/CodeIntel.Server/Services/Language/](src/CodeIntel.Server/Services/Language/) (namespace `CodeIntel.Server.Services.LanguageBackends`). `ContextRequestHandler`, `TraceWalker`, `MetricsService`, and `WorkspaceService` all dispatch via `ILanguageBackendRegistry` — no Roslyn calls outside [CSharpRoslynBackend.cs](src/CodeIntel.Server/Services/Language/CSharpRoslynBackend.cs). TypeScript trace + class/method/definition lookup go through `typescript-language-server` over LSP-stdio using `StreamJsonRpc`; install once with `npm install -g typescript-language-server typescript`. Opaque `MethodHandle` payload-routes through the trace BFS so the walker is language-agnostic; TS callers/callees use `prepareCallHierarchy` + `callHierarchy/incomingCalls|outgoingCalls`. LSP sessions are per-workspace child processes, lazily started, torn down on LRU eviction. `Lsp:Enabled=false` falls back to `NullLspSessionManager` (TS workspaces still load via file scan; semantic features become no-ops). All 39 PL/SQL parser/resolver/builder tests still pass post-refactor.
@@ -219,13 +221,72 @@ dotnet run
 
 The architecture handles model swaps via `appsettings.json` (`Llm:ModelPath`). No code changes needed to upgrade.
 
-| Stage | Machine | Model | RAM | Notes |
-|---|---|---|---|---|
-| Home dev | i7 + iRIS Xe iGPU | Qwen2.5-Coder-7B Q4_K_M | ~8GB | CPU-only, GpuLayerCount=0 |
-| Work ZBook | vPro i7 workstation | Qwen2.5-Coder-14B Q5_K_M | ~11GB | Still CPU. Noticeably better quality. |
-| OpenShift prod | container, possibly GPU node | Qwen2.5-Coder-32B Q4_K_M **or** Devstral Small 24B | 20-30GB | Devstral is purpose-built for agentic tool-calling — matches the spiderweb feature roadmap |
+| Stage | Machine | Model | GPU backend | RAM | Notes |
+|---|---|---|---|---|---|
+| Home dev | i7 + Iris Xe iGPU | Qwen2.5-Coder-7B Q4_K_M | Vulkan (CPU fallback) | ~8GB | **The committed `appsettings.json` + csproj reflect this baseline.** GpuLayerCount=0 → CPU only, or set to 20+ for partial Vulkan offload. |
+| Work ZBook | vPro i7 + NVIDIA + CUDA 12.8 toolkit | Qwen2.5-Coder-7B Q4_K_M (same as home — model upgrade still TODO) | CUDA 12 | ~8GB | Needs a local csproj swap (Vulkan→Cuda12) **and** `appsettings.Development.json` overrides. See "Per-machine overrides" below. **Quality is not noticeably better than home laptop today** — the win is wall-clock speed (CUDA tok/s) + the larger context budget, not the model. Upgrading to a 14B model is still on the table; needs a separate GGUF download + `Llm:ModelPath` + `Llm:ModelSha256` swap in the Development.json override. |
+| OpenShift prod | container, possibly GPU node | Qwen2.5-Coder-32B Q4_K_M **or** Devstral Small 24B | TBD | 20-30GB | Devstral is purpose-built for agentic tool-calling — matches the spiderweb feature roadmap |
 
 For OpenShift, model file lives on a persistent volume (don't bake into image — too big and changes independently).
+
+---
+
+## Per-machine overrides
+
+The committed `appsettings.json` + `csproj` are the **home-laptop baseline** (CPU + Vulkan, 7B model, 5000-token context). Don't bake work-laptop tuning into them — that's what broke this branch the first time around. Other machines override locally:
+
+### Work ZBook (CUDA + 14B model)
+
+There are two local diffs the work box needs. **Neither gets committed.**
+
+**1. csproj — swap the GPU backend NuGet** (LLamaSharp picks one native at process start; you can't toggle it via config). In [src/CodeIntel.Server/CodeIntel.Server.csproj](src/CodeIntel.Server/CodeIntel.Server.csproj), replace the Vulkan reference with Cuda12 and re-add the CUDA-DLL copy target. Stage these locally and use `git update-index --skip-worktree src/CodeIntel.Server/CodeIntel.Server.csproj` so a commit doesn't sweep them up.
+
+```xml
+<!-- Replace LLamaSharp.Backend.Vulkan with: -->
+<PackageReference Include="LLamaSharp.Backend.Cuda12" Version="0.27.0" />
+
+<!-- Add at the end of the project (gated on toolkit presence so it's safe to copy/paste): -->
+<Target Name="CopyCudaDeps" AfterTargets="Build"
+        Condition="Exists('C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cudart64_12.dll')">
+  <ItemGroup>
+    <CudaDlls Include="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cudart64_12.dll;
+                       C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cublas64_12.dll;
+                       C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin\cublasLt64_12.dll" />
+  </ItemGroup>
+  <Copy SourceFiles="@(CudaDlls)"
+        DestinationFolder="$(OutputPath)runtimes\win-x64\native\cuda12\"
+        SkipUnchangedFiles="true" />
+  <!-- cuda12 folder ships without ggml-cpu.dll but llama.dll links to it for hybrid CPU+GPU -->
+  <Copy SourceFiles="$(OutputPath)runtimes\win-x64\native\avx2\ggml-cpu.dll"
+        DestinationFolder="$(OutputPath)runtimes\win-x64\native\cuda12\"
+        SkipUnchangedFiles="true"
+        Condition="Exists('$(OutputPath)runtimes\win-x64\native\avx2\ggml-cpu.dll')" />
+</Target>
+```
+
+After editing csproj, run `dotnet restore --force-evaluate` once so `packages.lock.json` regenerates with the CUDA12 backend.
+
+**2. appsettings.Development.json — bump runtime knobs.** ASP.NET Core auto-merges this on top of `appsettings.json` whenever `ASPNETCORE_ENVIRONMENT=Development` (the default for `dotnet run`). The file is gitignored. Copy from the committed template:
+
+```powershell
+Copy-Item src\CodeIntel.Server\appsettings.Development.json.example src\CodeIntel.Server\appsettings.Development.json
+```
+
+Template contents (matches the work-laptop tuning that was in the bad merge):
+
+```json
+{
+  "Llm":     { "ContextSize": 16384, "GpuLayerCount": 20, "MaxResponseTokens": 2048, "Threads": 8 },
+  "Analysis": { "MaxContextTokens": 12000 },
+  "Lsp":     { "Enabled": false }
+}
+```
+
+After editing this file, **delete `data/codeintel.db`** so `result_cache` rows from the smaller-context regime don't replay. (`ContentHasher.BuildCacheKey` folds `MaxContextTokens` into the key, so new runs will miss old cache entries — but cleaning the DB avoids confusion.)
+
+### Returning to the home laptop
+
+Nothing to do. Pull, build, run. The committed config is already correct.
 
 ---
 
@@ -241,13 +302,9 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 8. **SQLite path resolution** — `Data:DatabasePath` is resolved relative to `ContentRootPath`, not CWD. Running tests from elsewhere will create a fresh DB in that directory; tests use a tempfile to avoid cross-contamination.
 9. **Rate limiter is per IP, not per user** — on shared infra (NAT, internal proxy, OpenShift Service mesh) one user can starve everyone behind the same source IP. Raise `Analysis:RateLimitRunsPerMinute` or partition on a header when auth lands.
 10. **Result cache TTL is per-row, not per-content** — editing `appsettings.json` to lower `ResultCacheTtlHours` does **not** evict existing rows; they're only filtered on lookup. Delete `data/codeintel.db` (or the `result_cache` table) for an immediate flush.
-11. **Large files are silently truncated — most of the file never gets analyzed.** `MaxContextTokens: 5000` at `TokensPerCharEstimate: 0.25` means only ~20 KB (~400 lines) of any file fits the budget; the rest is dropped with a `// ... [truncated] ...` tail. A 4339-line file gets ~10% coverage, which explains suspiciously low finding counts. Check server logs for `"Context truncated"` to confirm. Additionally, `MaxResponseTokens: 1024` can cut the model off mid-output before it emits all its findings. **Recommended overrides for the ZBook (14B model, GPU layers):**
-    ```json
-    "Llm":     { "ContextSize": 16384, "MaxResponseTokens": 2048 },
-    "Analysis": { "MaxContextTokens": 12000 }
-    ```
-    After changing these, delete `data/codeintel.db` so the prior truncated result isn't replayed from cache.
-12. **Backends are not mixable — and `GpuLayerCount = 0` does not mean CPU.** llama.cpp picks one backend per process (Vulkan, CUDA, or CPU); the only hybrid knob is how many transformer layers offload to the chosen GPU backend. The csproj today references Vulkan + CPU only — on an NVIDIA box that means Vulkan-against-NVIDIA, not native CUDA. And [LlamaSharpService.cs:139](src/CodeIntel.Server/Services/LlamaSharpService.cs#L139) substitutes `20` for a configured `GpuLayerCount` of 0, so the default config is a **partial** GPU offload, not CPU-only. Symptom on a work laptop: "CUDA feels laggy" usually = Vulkan + 20/33 layers + PCIe shuffling. See [docs/LAPTOP-PERF-CHECK.md](docs/LAPTOP-PERF-CHECK.md) for the full diagnostic checklist (backend identification, VRAM headroom, power plan, throttling reasons, tok/s targets) before changing csproj or appsettings.
+11. **Large files now auto-chunk; turn it off to debug.** Files larger than `MaxContextTokens` are split into sequential chunks by [FileChunker](src/CodeIntel.Server/Services/FileChunker.cs) (brace seams for C#/TS/Java, `END;`/`CREATE OR REPLACE` for PL/SQL, line-balanced fallback otherwise). Each chunk runs its own agentic loop; a short carry-over notes block (`Lines X–Y reviewed (N findings)`) is fed forward so the model retains awareness of earlier chunks. Per-chunk budget = `MaxContextTokens - ChunkCarryOverReserveTokens` (default 5000-300=4700). Capped at `MaxChunksPerFile=8` per file. Status events surface chunk progress in the chip + cold-start panel. The chunker's algorithm version (`FileChunker.Version`) is folded into the result-cache key for chunked runs so future tuning doesn't replay stale chunked outputs. Disable via `Analysis:EnableAutoChunking=false` if you suspect chunking is masking a real bug; that falls back to the prior silent-truncation behavior. Additionally, `MaxResponseTokens: 1536` (default; was 1024) can still cut the model off mid-finding — when this happens the orchestrator refuses to cache the run and the UI surfaces a degraded-run warning ([InvestigationOrchestrator](src/CodeIntel.Server/Services/InvestigationOrchestrator.cs) tracks `IncompleteFindingCount`/`MalformedFindings`/`IsDone`). The home-laptop committed defaults are intentionally conservative; bump them via `appsettings.Development.json` on machines that can afford the budget — see "Per-machine overrides".
+12. **Backends are not mixable — and `GpuLayerCount = 0` does not mean CPU.** llama.cpp picks one backend per process (Vulkan, CUDA, or CPU); the only hybrid knob is how many transformer layers offload to the chosen GPU backend. The committed csproj references CPU + Vulkan (Iris Xe + AMD/NVIDIA-via-Vulkan). To use native CUDA you must swap the NuGet locally — see "Per-machine overrides". And [LlamaSharpService.cs](src/CodeIntel.Server/Services/LlamaSharpService.cs) substitutes `20` for a configured `GpuLayerCount` of 0 in the Auto branch, so even with `GpuLayerCount=0` you get partial GPU offload unless you set `Backend=cpu` explicitly. Symptom on a work laptop: "CUDA feels laggy" usually = Vulkan + 20/33 layers + PCIe shuffling. See [docs/LAPTOP-PERF-CHECK.md](docs/LAPTOP-PERF-CHECK.md) for the full diagnostic checklist (backend identification, VRAM headroom, power plan, throttling reasons, tok/s targets) before changing csproj or appsettings.
+13. **Per-machine config drift caused a real outage.** A previous "updates" merge committed work-laptop tuning (Cuda12 backend NuGet, `NativeLibraryConfig.WithLibrary` early-load in `Program.cs`, `GpuLayerCount=20`, `ContextSize=16384`, `Lsp.Enabled=false`) directly into `appsettings.json` + csproj on `main`. On the home laptop with no NVIDIA and no CUDA toolkit, the cuda12 `llama.dll` would load, fail to find `cudart64_12.dll`, and the auto-fallback path was disarmed by the early `WithLibrary` call. Lesson: **machine-specific overrides go in `appsettings.Development.json` (gitignored) or a local-only csproj diff (`git update-index --skip-worktree`), never on `main`.**
 
 ---
 
@@ -356,16 +413,31 @@ For OpenShift, model file lives on a persistent volume (don't bake into image �
 
 In recommended order:
 
-1. **Auth (C1) + configurable CORS (B5).** With persistence + rate limiting + ignored-findings + Save-to-repo all shipping, the remaining gating concern before OpenShift is identity. Plan: Windows Auth via IIS passthrough on the internal network, plus a small middleware shim that scopes `WorkspaceController.Browse` (currently still leaks the host filesystem) to an allowlist of root prefixes. Move CORS origins to `Cors:AllowedOrigins` while in `Program.cs`.
-2. **Smoke-test the Metrics tab end-to-end.** Load `CodeIntel.sln`, switch to Metrics, verify cyclomatic complexity numbers look sane on known-complex methods. Then load a PL/SQL folder and verify cursor + WHEN OTHERS counts. Cache invalidation: edit a file, re-compute, confirm numbers update.
-3. **Test coverage for the hardening surface.** SQLite-backed stores, `ResultCache`, `IgnoredFindingsStore`, `PathSafety`, `SecretScrubber`, `FindingsAggregator`, `FindingsComparer`, `SkillRouter`, `MetricsService` — none of these have unit tests yet. Existing xunit project only covers PL/SQL parser/resolver/builder. Target: 70% line coverage on `Services/` before the OpenShift cutover (see [docs/REVIEW-ENHANCEMENTS.md](docs/REVIEW-ENHANCEMENTS.md) §E).
-4. **Verify trace-mode in the UI on a richer C# project.** Local smoke-tests passed on `CodeIntel.sln` (Callees depth=1 → 8 nodes ~1m25s; Both depth=2 → 20 nodes ~3m). Want to confirm the experience on something bigger — controller/service entry points in a real LOB app. Now interesting: does the `MaxTotalNodes=100` cap fire? Does the overload-candidate picker get hit? Does the callers cache change wall-clock noticeably?
-4. **B1 follow-up: smoke-test the TypeScript LSP path on a real React repo.** The abstraction + LSP client landed, but only the C# path is verified end-to-end against `CodeIntel.sln`. Want to confirm: load a React/Next.js codebase, run analysis (raw file mode should work via file-scan), open a TS file and use "Trace from here" to verify `prepareCallHierarchy` → `incomingCalls`/`outgoingCalls` round-trips correctly, check that `typescript-language-server` is on PATH and the child process spawn works, watch for LSP init timeouts on larger repos and tune `Lsp:InitializeTimeoutSeconds` if needed.
-5. **PL/SQL repo-mode UI smoke-test + Oracle live (v2).** v1 (repo-only) is shipping with an ANTLR-backed parser — load a real PL/SQL repo, pick a stored proc, run each of the 4 SQL presets, verify the parser/resolver attaches the right object definitions and the Copilot Next Step briefs read cleanly. Then v2: add `Oracle.ManagedDataAccess.Core`, wire a `SqlOptions` (connection string) + `IOracleSchemaService` that fulfils the `OracleObject` context-request with live `ALL_TABLES` / `USER_SOURCE` data when the repo doesn't have the DDL committed. Pairs with the trace-mode DbAccess NodeKind (cross-workspace augmentation) once the LSP rewrite lands.
-6. **Whole-repo dead-code detection.** Tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch). Cheap once LSP is in place.
-7. **Business documentation mode.** Walk top-level entry points → trace → catalog. Builds directly on the trace pipeline.
-8. **File-backed skills.** `SkillRouter` already ships with content-keyed predicates; the next step is moving the hard-coded addenda into `Prompts/skills/*.md` and routing by the same predicates.
-9. **Dockerfile + OpenShift** — multi-stage build (npm → dotnet publish), volume mounts for `/models` + `/data` (SQLite), ConfigMap for runtime tuning, `/readyz` wired to the readiness probe.
+### Top of the next session — issues uncovered by tonight's end-to-end test pass (2026-05-13)
+
+The chunking + parser-fix work was validated against the PantryPrep `shop/` files (find-dead-code → 8 findings clean, parser fix held, cache hit instant on re-run). During that pass three follow-up issues surfaced that should land before the next feature push:
+
+1. **Metrics tab silently returns 0 on TypeScript workspaces.** [MetricsService.cs:125-129](src/CodeIntel.Server/Services/MetricsService.cs#L125-L129) filters to `.cs` + PL/SQL extensions; TS files are dropped with no API or UI signal, so the user sees `Files: 0, Methods: 0` and assumes the tab is broken. Fix options: (a) implement a TS metrics analyzer behind the existing `ILanguageBackend` interface (LSP-driven cyclomatic + method extraction), (b) at minimum, return a `language: "typeScript", supported: false` shape and have `MetricsPanel` render an explicit "Metrics not yet implemented for TypeScript" placeholder.
+2. **find-bugs prompt is over-restrictive.** End-to-end on the same shop files: model emitted `<done /><done />` (16 chars total) across both chunks — no findings, no rationale-on-empty (despite the prompt's new "When you find nothing" instruction). The anti-hedging guardrails ("If you cannot name both, emit nothing", banned words list) are crowding the rationale rule out of the model's attention. Fix: hoist the rationale-on-empty section above "What is NOT a finding" in [find-bugs.md](src/CodeIntel.Server/Prompts/find-bugs.md), OR add an explicit "before writing `<done />`, write one plain-text line explaining the file shape" sentence inside the Output rules block.
+3. **find-business-rules emits the rationale but never writes `<done />`.** Verified on KitchenTourContext.tsx: clean 22s run with the exact rationale we asked for in the streamed output, but `reachedDone=False` → cache write skipped → every identical re-run pays the LLM cost again. The model treats the rationale as the end of its turn and never emits the done marker. Fix: in [find-business-rules.md](src/CodeIntel.Server/Prompts/find-business-rules.md) and the four sibling presets, emphasise that `<done />` is **mandatory** after the rationale (current phrasing "then write `<done />`" gets dropped). One blunter wording: "After writing this sentence you MUST write `<done />` on its own line before stopping. The run is degraded and cannot be cached without it."
+
+### Remaining test pass that was deferred
+
+4. **Trace mode end-to-end on a TS file** (LSP path — `prepareCallHierarchy` + `callHierarchy/incomingCalls`/`outgoingCalls`). Verify `typescript-language-server` spawn works, init timeout, that callers/callees populate per the workspace `Lsp:Enabled` flag.
+5. **SQL preset end-to-end on `test-data/sql`.** Pick `orders_api.pkb` or `payroll_pkg.pkb`, run each of the 4 SQL-tuned presets, verify the PL/SQL dep-resolver attaches table DDL when the proc references it.
+6. **find-business-rules on the chunked shop files** (the original reported reproduction). With the parser fix + chunking now correct, this should produce real findings on a TS Context+component file set. Test against the user's original 0-finding screenshot.
+
+### Pre-tonight backlog (re-ordered after the items above)
+
+7. **Auth (C1) + configurable CORS (B5).** With persistence + rate limiting + ignored-findings + Save-to-repo all shipping, the remaining gating concern before OpenShift is identity. Plan: Windows Auth via IIS passthrough on the internal network, plus a small middleware shim that scopes `WorkspaceController.Browse` (currently still leaks the host filesystem) to an allowlist of root prefixes. Move CORS origins to `Cors:AllowedOrigins` while in `Program.cs`.
+8. **Smoke-test the Metrics tab end-to-end on a C# / PL/SQL workspace** (TS metrics are item #1 above). Load `CodeIntel.sln`, verify cyclomatic complexity numbers look sane on known-complex methods. Then load a PL/SQL folder and verify cursor + WHEN OTHERS counts. Cache invalidation: edit a file, re-compute, confirm numbers update.
+9. **Test coverage for the hardening surface.** SQLite-backed stores, `ResultCache`, `IgnoredFindingsStore`, `PathSafety`, `SecretScrubber`, `FindingsAggregator`, `FindingsComparer`, `SkillRouter`, `MetricsService` — none of these have unit tests yet. Existing xunit project covers PL/SQL parser/resolver/builder + `FileChunker` + `FindingStreamParser` (added tonight). Target: 70% line coverage on `Services/` before the OpenShift cutover (see [docs/REVIEW-ENHANCEMENTS.md](docs/REVIEW-ENHANCEMENTS.md) §E).
+10. **Verify trace-mode in the UI on a richer C# project.** Local smoke-tests passed on `CodeIntel.sln` (Callees depth=1 → 8 nodes ~1m25s; Both depth=2 → 20 nodes ~3m). Want to confirm the experience on something bigger — controller/service entry points in a real LOB app. Now interesting: does the `MaxTotalNodes=100` cap fire? Does the overload-candidate picker get hit? Does the callers cache change wall-clock noticeably?
+11. **PL/SQL repo-mode UI smoke-test + Oracle live (v2).** v1 (repo-only) is shipping with an ANTLR-backed parser — load a real PL/SQL repo, pick a stored proc, run each of the 4 SQL presets, verify the parser/resolver attaches the right object definitions and the Copilot Next Step briefs read cleanly. Then v2: add `Oracle.ManagedDataAccess.Core`, wire a `SqlOptions` (connection string) + `IOracleSchemaService` that fulfils the `OracleObject` context-request with live `ALL_TABLES` / `USER_SOURCE` data when the repo doesn't have the DDL committed. Pairs with the trace-mode DbAccess NodeKind (cross-workspace augmentation) once the LSP rewrite lands.
+12. **Whole-repo dead-code detection.** Tree-sitter to enumerate functions, LSP for references, LLM only for ambiguous cases (reflection, DI, dynamic dispatch). Cheap once LSP is in place.
+13. **Business documentation mode.** Walk top-level entry points → trace → catalog. Builds directly on the trace pipeline.
+14. **File-backed skills.** `SkillRouter` already ships with content-keyed predicates; the next step is moving the hard-coded addenda into `Prompts/skills/*.md` and routing by the same predicates.
+15. **Dockerfile + OpenShift** — multi-stage build (npm → dotnet publish), volume mounts for `/models` + `/data` (SQLite), ConfigMap for runtime tuning, `/readyz` wired to the readiness probe.
 
 ---
 

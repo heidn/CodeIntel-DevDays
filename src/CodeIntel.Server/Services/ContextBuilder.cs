@@ -10,6 +10,22 @@ public interface IContextBuilder
         IEnumerable<string> selectedFilePaths,
         int maxTokenBudget,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Builds a context where <paramref name="chunkedFilePath"/> contributes only the
+    /// content in <paramref name="chunk"/> (lines &amp; text already pre-sliced by the
+    /// caller). Other selected files are included normally, subject to the same token
+    /// budget. PL/SQL dependency resolution is skipped on chunked builds to keep the
+    /// per-chunk budget predictable.
+    /// </summary>
+    Task<CodeContext> BuildChunkAsync(
+        string workspaceId,
+        IEnumerable<string> selectedFilePaths,
+        string chunkedFilePath,
+        ChunkRange chunk,
+        int chunkTotalLines,
+        int maxTokenBudget,
+        CancellationToken ct = default);
 }
 
 public class ContextBuilder : IContextBuilder
@@ -180,6 +196,90 @@ public class ContextBuilder : IContextBuilder
 
         if (truncated)
             _logger.LogInformation("Context truncated to fit budget. Files included: {Count}", files.Count);
+
+        return new CodeContext(files, totalTokens, ws.Language);
+    }
+
+    public async Task<CodeContext> BuildChunkAsync(
+        string workspaceId,
+        IEnumerable<string> selectedFilePaths,
+        string chunkedFilePath,
+        ChunkRange chunk,
+        int chunkTotalLines,
+        int maxTokenBudget,
+        CancellationToken ct = default)
+    {
+        var ws = _workspace.GetWorkspace(workspaceId)
+            ?? throw new InvalidOperationException($"Workspace {workspaceId} not loaded");
+
+        var paths = selectedFilePaths.ToList();
+        if (paths.Count == 0)
+            throw new InvalidOperationException("No files selected for analysis");
+
+        var rootDir = ws.RootFolder
+            ?? (File.Exists(ws.ProjectPath) ? Path.GetDirectoryName(ws.ProjectPath)! : ws.ProjectPath);
+
+        var files = new List<FileContext>();
+        var totalTokens = 0;
+
+        // Emit the chunked file FIRST so it always fits — other companion files
+        // give up budget rather than the primary subject of the chunk.
+        var chunkRelative = Path.IsPathRooted(chunkedFilePath)
+            ? Path.GetRelativePath(rootDir, chunkedFilePath)
+            : chunkedFilePath;
+        var chunkTokens = EstimateTokens(chunk.Content);
+        files.Add(new FileContext(
+            FilePath: chunkedFilePath,
+            RelativePath: chunkRelative,
+            Content: chunk.Content,
+            IsExtractedSummary: false,
+            IsResolvedDependency: false,
+            ChunkStartLine: chunk.StartLine,
+            ChunkEndLine: chunk.EndLine,
+            ChunkTotalLines: chunkTotalLines));
+        totalTokens += chunkTokens;
+
+        foreach (var path in paths)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (string.Equals(path, chunkedFilePath, StringComparison.OrdinalIgnoreCase)) continue;
+
+            string content;
+            try
+            {
+                content = await _workspace.ReadFileAsync(workspaceId, path, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to read companion file {Path}", path);
+                continue;
+            }
+
+            var tokens = EstimateTokens(content);
+            if (totalTokens + tokens > maxTokenBudget)
+            {
+                var remaining = maxTokenBudget - totalTokens;
+                if (remaining < 200)
+                {
+                    _logger.LogInformation(
+                        "Chunked build: skipping companion {Path}, no budget remaining ({Total}/{Budget})",
+                        path, totalTokens, maxTokenBudget);
+                    break;
+                }
+                content = TruncateToTokens(content, remaining);
+                tokens = EstimateTokens(content);
+            }
+
+            var relative = Path.IsPathRooted(path)
+                ? Path.GetRelativePath(rootDir, path)
+                : path;
+            files.Add(new FileContext(
+                FilePath: path,
+                RelativePath: relative,
+                Content: content,
+                IsExtractedSummary: false));
+            totalTokens += tokens;
+        }
 
         return new CodeContext(files, totalTokens, ws.Language);
     }

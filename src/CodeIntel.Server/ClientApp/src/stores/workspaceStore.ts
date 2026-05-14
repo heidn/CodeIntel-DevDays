@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import type { Workspace, PinnedSnippet } from '../types';
+import { useAnalysisStore } from './analysisStore';
+import { useTraceStore } from './traceStore';
 
 interface WorkspaceState {
   workspace: Workspace | null;
@@ -30,7 +32,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   solutionPanelCollapsed: false,
   wordWrap: false,
 
-  setWorkspace: (ws) => set({ workspace: ws, selectedFiles: new Set(), previewedFile: null, pinnedSnippet: null }),
+  setWorkspace: (ws) =>
+    set((state) => {
+      const prevId = state.workspace?.id ?? null;
+      const nextId = ws?.id ?? null;
+      if (prevId !== nextId) {
+        useAnalysisStore.getState().reset();
+        useTraceStore.getState().reset();
+      }
+      return { workspace: ws, selectedFiles: new Set(), previewedFile: null, pinnedSnippet: null };
+    }),
 
   toggleFile: (absolutePath) =>
     set((state) => {

@@ -44,6 +44,29 @@ public class AnalysisOptions
     /// Per-IP rate limit: how many runs in the window before further requests are rejected.
     /// </summary>
     public int RateLimitRunsPerMinute { get; set; } = 5;
+
+    /// <summary>
+    /// When true, files that exceed <see cref="MaxContextTokens"/> are split into
+    /// sequential chunks (on natural language boundaries where possible) rather than
+    /// silently truncated. Each chunk runs its own agentic loop; findings accumulate
+    /// across chunks and a small "carry-over notes" block is fed forward so the model
+    /// retains awareness of earlier symbols. Disable to fall back to single-pass
+    /// truncation (useful for diagnosing chunking-related differences).
+    /// </summary>
+    public bool EnableAutoChunking { get; set; } = true;
+
+    /// <summary>
+    /// Token budget reserved per chunk for the carry-over notes block (the prefix
+    /// summarising what earlier chunks already covered). Effective per-chunk file
+    /// budget = <see cref="MaxContextTokens"/> minus this reserve.
+    /// </summary>
+    public int ChunkCarryOverReserveTokens { get; set; } = 300;
+
+    /// <summary>
+    /// Hard ceiling on chunks per file. Protects against pathologically large files
+    /// from creating dozens of sequential agentic loops.
+    /// </summary>
+    public int MaxChunksPerFile { get; set; } = 8;
 }
 
 public class DataOptions

@@ -10,7 +10,7 @@ public interface IResultCache
     /// Returns a prior analysis result if the same {preset, model, file-content hash}
     /// has been seen within the configured TTL. Free-text mode never caches.
     /// </summary>
-    Task<AnalysisResult?> LookupAsync(AnalysisRequest request, string? contentHash, string? modelName, CancellationToken ct);
+    Task<AnalysisResult?> LookupAsync(AnalysisRequest request, string? contentHash, string? modelName, CancellationToken ct, string? chunkVersion = null);
 
     /// <summary>
     /// Records the cache key against an analysis id. Idempotent on duplicate keys.
@@ -37,11 +37,11 @@ public class ResultCache : IResultCache
         _logger = logger;
     }
 
-    public async Task<AnalysisResult?> LookupAsync(AnalysisRequest request, string? contentHash, string? modelName, CancellationToken ct)
+    public async Task<AnalysisResult?> LookupAsync(AnalysisRequest request, string? contentHash, string? modelName, CancellationToken ct, string? chunkVersion = null)
     {
         if (!_options.EnableResultCache) return null;
         if (request.Mode != AnalysisMode.Preset) return null;
-        var cacheKey = ContentHasher.BuildCacheKey(request.PresetKey, modelName, contentHash, _options.MaxContextTokens);
+        var cacheKey = ContentHasher.BuildCacheKey(request.PresetKey, modelName, contentHash, _options.MaxContextTokens, chunkVersion);
         if (cacheKey is null) return null;
 
         await using var conn = await _db.OpenAsync(ct);

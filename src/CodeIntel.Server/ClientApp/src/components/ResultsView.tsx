@@ -181,11 +181,15 @@ export default function ResultsView() {
   const currentAnalysisId = useAnalysisStore((s) => s.currentAnalysisId);
   const analyzedFilePaths = useAnalysisStore((s) => s.analyzedFilePaths);
   const selectedPresetKey = useAnalysisStore((s) => s.selectedPresetKey);
+  const incompleteFindings = useAnalysisStore((s) => s.incompleteFindings);
+  const malformedFindings  = useAnalysisStore((s) => s.malformedFindings);
+  const reachedDone        = useAnalysisStore((s) => s.reachedDone);
   const runStartedAt      = useAnalysisStore((s) => s.runStartedAt);
   const lastTokenAt       = useAnalysisStore((s) => s.lastTokenAt);
   const requestCancel     = useAnalysisStore((s) => s.requestCancel);
   const reset             = useAnalysisStore((s) => s.reset);
   const workspace         = useWorkspaceStore((s) => s.workspace);
+  const selectedFiles     = useWorkspaceStore((s) => s.selectedFiles);
 
   const [activeTab, setActiveTab] = useState<'output' | 'code'>('output');
 
@@ -246,6 +250,12 @@ export default function ResultsView() {
 
   const showCodeTab = (isComplete || isCancelled) && !!selectedPresetKey && CODE_VIEW_PRESETS.has(selectedPresetKey);
 
+  const selectionChanged =
+    (isComplete || isCancelled) &&
+    analyzedFilePaths.length > 0 &&
+    (selectedFiles.size !== analyzedFilePaths.length ||
+      analyzedFilePaths.some((p) => !selectedFiles.has(p)));
+
   const displayText = streamedText
     .replace(/<finding>[\s\S]*?<\/finding>/g, '')
     .replace(/<done\s*\/>/g, '')
@@ -284,22 +294,31 @@ export default function ResultsView() {
       {/* Header */}
       <Stack
         direction="row"
-        sx={{ px: 3, py: 1.5, borderBottom: '1px solid', borderColor: 'divider', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}
+        sx={{ px: 3, py: 1.5, borderBottom: '1px solid', borderColor: 'divider', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, gap: 1, rowGap: 1, flexWrap: 'wrap', minWidth: 0 }}
       >
-        <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
-          <Typography variant="overline" color="text.secondary">Results</Typography>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', flexWrap: 'wrap', rowGap: 0.75, minWidth: 0 }}>
+          <Typography variant="overline" color="text.secondary" sx={{ flexShrink: 0 }}>Results</Typography>
           {isActive && (
-            <Chip
-              size="small"
-              label={`${statusMessage || 'running'} · ${elapsedSec}s`}
-              sx={{ bgcolor: 'rgba(79,70,229,0.08)', color: 'primary.main', fontFamily: '"JetBrains Mono", monospace' }}
-            />
+            <Tooltip title={statusMessage || 'running'} placement="bottom-start">
+              <Chip
+                size="small"
+                label={`${statusMessage || 'running'} · ${elapsedSec}s`}
+                sx={{
+                  bgcolor: 'rgba(79,70,229,0.08)',
+                  color: 'primary.main',
+                  fontFamily: '"JetBrains Mono", monospace',
+                  maxWidth: '100%',
+                  minWidth: 0,
+                  '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
+                }}
+              />
+            </Tooltip>
           )}
           {isCancelling && (
             <Chip
               size="small"
               label={`cancelling… · ${elapsedSec}s`}
-              sx={{ bgcolor: 'rgba(202,138,4,0.08)', color: 'warning.main', fontFamily: '"JetBrains Mono", monospace' }}
+              sx={{ bgcolor: 'rgba(202,138,4,0.08)', color: 'warning.main', fontFamily: '"JetBrains Mono", monospace', flexShrink: 0 }}
             />
           )}
           {showIdleWarn && (
@@ -307,14 +326,14 @@ export default function ResultsView() {
               size="small"
               icon={<WarningAmberIcon sx={{ fontSize: 14 }} />}
               label={`no output for ${idleSec}s`}
-              sx={{ bgcolor: 'rgba(202,138,4,0.10)', color: 'warning.main', fontFamily: '"JetBrains Mono", monospace' }}
+              sx={{ bgcolor: 'rgba(202,138,4,0.10)', color: 'warning.main', fontFamily: '"JetBrains Mono", monospace', flexShrink: 0 }}
             />
           )}
           {isComplete && (
             <Chip
               size="small"
               label={`${durationSeconds.toFixed(1)}s · ${findings.length} ${findings.length === 1 ? 'finding' : 'findings'}`}
-              sx={{ bgcolor: 'rgba(22,163,74,0.08)', color: 'success.main', fontFamily: '"JetBrains Mono", monospace' }}
+              sx={{ bgcolor: 'rgba(22,163,74,0.08)', color: 'success.main', fontFamily: '"JetBrains Mono", monospace', flexShrink: 0 }}
             />
           )}
           {isCancelled && (
@@ -325,11 +344,12 @@ export default function ResultsView() {
                 bgcolor: cancelReason === 'user' ? 'rgba(100,116,139,0.10)' : 'rgba(202,138,4,0.10)',
                 color:   cancelReason === 'user' ? 'text.secondary' : 'warning.main',
                 fontFamily: '"JetBrains Mono", monospace',
+                flexShrink: 0,
               }}
             />
           )}
-          {contextTokens > 0 && (
-            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"JetBrains Mono", monospace' }}>
+          {!isActive && !isCancelling && contextTokens > 0 && (
+            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: '"JetBrains Mono", monospace', flexShrink: 0 }}>
               {fileCount} {fileCount === 1 ? 'file' : 'files'} · ~{contextTokens.toLocaleString()} tokens
             </Typography>
           )}
@@ -363,7 +383,7 @@ export default function ResultsView() {
           )}
         </Stack>
 
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
           {(isActive || isCancelling) && (
             <Button
               size="small"
@@ -520,6 +540,47 @@ export default function ResultsView() {
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       />
 
+      {/* Stale-selection banner — current file selection no longer matches the run */}
+      {selectionChanged && (
+        <Box
+          sx={{
+            px: 3,
+            py: 1,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'rgba(202,138,4,0.06)',
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+          }}
+        >
+          <WarningAmberIcon sx={{ fontSize: 14, color: 'warning.main', flexShrink: 0 }} />
+          <Typography
+            variant="caption"
+            sx={{
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: '0.7rem',
+              color: 'text.secondary',
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
+            Showing results from a previous selection ({analyzedFilePaths.length}{' '}
+            {analyzedFilePaths.length === 1 ? 'file' : 'files'}). Your current selection has changed —
+            re-run to refresh.
+          </Typography>
+          <Button
+            size="small"
+            variant="text"
+            onClick={reset}
+            sx={{ fontSize: '0.7rem', textTransform: 'none', flexShrink: 0 }}
+          >
+            Clear
+          </Button>
+        </Box>
+      )}
+
       {isActive && (
         <Box
           sx={{
@@ -597,6 +658,99 @@ export default function ResultsView() {
               >
                 {errorMessage}
               </Alert>
+            )}
+            {isComplete && (incompleteFindings > 0 || malformedFindings > 0 || !reachedDone) && (
+              <Alert severity="warning" sx={{ fontSize: '0.8125rem', mb: 1.5 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5, fontSize: '0.8125rem' }}>
+                  Run completed with degraded output
+                </Typography>
+                {incompleteFindings > 0 && (
+                  <Typography variant="caption" sx={{ display: 'block' }}>
+                    {incompleteFindings} finding{incompleteFindings === 1 ? '' : 's'} cut off mid-stream — the model hit its response-token cap before closing the {'<finding>'} tag. Try a smaller file selection or bump <code>Llm:MaxResponseTokens</code> in <code>appsettings.Development.json</code>.
+                  </Typography>
+                )}
+                {malformedFindings > 0 && (
+                  <Typography variant="caption" sx={{ display: 'block' }}>
+                    {malformedFindings} finding{malformedFindings === 1 ? '' : 's'} had invalid JSON and {malformedFindings === 1 ? 'was' : 'were'} dropped by the parser.
+                  </Typography>
+                )}
+                {!reachedDone && incompleteFindings === 0 && malformedFindings === 0 && (
+                  <Typography variant="caption" sx={{ display: 'block' }}>
+                    The model stopped without writing <code>&lt;done /&gt;</code>. Output may be incomplete.
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ display: 'block', mt: 0.5, opacity: 0.8 }}>
+                  This run was not cached, so a future re-run will retry from scratch.
+                </Typography>
+              </Alert>
+            )}
+            {isComplete
+              && findings.length === 0
+              && incompleteFindings === 0
+              && malformedFindings === 0
+              && reachedDone
+              && analyzedFilePaths.length > 0
+              && selectedPresetKey
+              && CODE_VIEW_PRESETS.has(selectedPresetKey) && (
+              <Alert
+                severity="info"
+                icon={<CheckCircleOutlineIcon sx={{ fontSize: 18 }} />}
+                sx={{ fontSize: '0.8125rem', mb: 1.5 }}
+              >
+                Analysis completed. The model reviewed {analyzedFilePaths.length}{' '}
+                {analyzedFilePaths.length === 1 ? 'file' : 'files'} and emitted no findings.
+                {displayText
+                  ? " See the model's rationale below."
+                  : ' No rationale was provided — try a different preset or a broader file selection.'}
+              </Alert>
+            )}
+            {isActive && !displayText && (
+              <Box
+                sx={{
+                  mb: 1.5,
+                  p: 1.5,
+                  bgcolor: 'rgba(99,102,241,0.05)',
+                  border: '1px solid rgba(99,102,241,0.18)',
+                  borderRadius: 1,
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: '0.75rem',
+                  color: 'text.secondary',
+                  lineHeight: 1.6,
+                }}
+              >
+                <Typography
+                  variant="caption"
+                  sx={{
+                    display: 'block',
+                    fontWeight: 600,
+                    color: 'primary.main',
+                    fontFamily: '"JetBrains Mono", monospace',
+                    fontSize: '0.7rem',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    mb: 0.5,
+                  }}
+                >
+                  {statusMessage || 'Working…'}
+                </Typography>
+                {contextTokens > 0 && (
+                  <Box sx={{ mb: 0.5 }}>
+                    Reading ~{contextTokens.toLocaleString()} tokens of context from{' '}
+                    {fileCount} {fileCount === 1 ? 'file' : 'files'}. The model has to process the full
+                    prompt before producing its first output token.
+                  </Box>
+                )}
+                <Box sx={{ opacity: 0.75 }}>
+                  First-token latency on cold start: typically 30–60s on the home laptop (Vulkan/CPU),
+                  faster on machines with a dedicated GPU. Tokens will stream into this pane as soon
+                  as the model starts generating.
+                </Box>
+                {elapsedSec >= 5 && (
+                  <Box sx={{ mt: 0.75, opacity: 0.7, fontSize: '0.7rem' }}>
+                    Waiting {elapsedSec}s…
+                  </Box>
+                )}
+              </Box>
             )}
             {(isActive || isCancelling || isComplete || isCancelled) && (
               <>
