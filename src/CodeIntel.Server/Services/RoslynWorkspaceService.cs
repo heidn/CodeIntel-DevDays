@@ -231,19 +231,29 @@ public sealed class WorkspaceService : IWorkspaceService
         return word.Length > 0 ? word : null;
     }
 
-    private static IReadOnlyList<string> SameGroupExtensions(string ext) => ext switch
+    private static IReadOnlyList<string> SameGroupExtensions(string ext)
     {
-        ".ts" or ".tsx" or ".js" or ".jsx" => [".ts", ".tsx", ".js", ".jsx"],
-        ".java"                             => [".java"],
-        ".sql" or ".pkg" or ".pkb"          => [".sql", ".pkg", ".pkb"],
-        _                                   => [ext],
-    };
+        if (PlSqlFileExtensions.Contains(ext)) return PlSqlFileExtensions.All;
+        return ext switch
+        {
+            ".ts" or ".tsx" or ".js" or ".jsx" => [".ts", ".tsx", ".js", ".jsx"],
+            ".java"                             => [".java"],
+            _                                   => [ext],
+        };
+    }
 
     private static IReadOnlyList<Regex> DefinitionPatterns(string ext, string word)
     {
         var w = Regex.Escape(word);
         const RegexOptions R = RegexOptions.Compiled;
         const RegexOptions RI = RegexOptions.Compiled | RegexOptions.IgnoreCase;
+
+        if (PlSqlFileExtensions.Contains(ext))
+            return
+            [
+                new($@"\bCREATE\b.*?\b(?:PROCEDURE|FUNCTION|PACKAGE(?:\s+BODY)?|TABLE|VIEW|TYPE)\b\s+(?:\w+\.)?{w}\b", RI),
+                new($@"^\s*(?:PROCEDURE|FUNCTION)\s+(?:\w+\.)?{w}\b", RI),
+            ];
 
         return ext switch
         {
@@ -260,11 +270,6 @@ public sealed class WorkspaceService : IWorkspaceService
                 new($@"(?:class|interface|enum|record)\s+{w}\b", R),
                 new($@"\b[\w<>\[\]]+\s+{w}\s*\(", R),
             ],
-            ".sql" or ".pkg" or ".pkb" =>
-            [
-                new($@"\bCREATE\b.*?\b(?:PROCEDURE|FUNCTION|PACKAGE(?:\s+BODY)?|TABLE|VIEW|TYPE)\b\s+(?:\w+\.)?{w}\b", RI),
-                new($@"^\s*(?:PROCEDURE|FUNCTION)\s+(?:\w+\.)?{w}\b", RI),
-            ],
             _ => [],
         };
     }
@@ -279,7 +284,6 @@ public static class LanguageDetector
     private static readonly string[] TsExtensions = [".ts", ".tsx", ".js", ".jsx"];
     private static readonly string[] JavaExtensions = [".java"];
     private static readonly string[] CsExtensions = [".cs"];
-    private static readonly string[] SqlExtensions = [".sql", ".pkg", ".pkb"];
 
     public static Language Detect(string path)
     {
@@ -291,7 +295,7 @@ public static class LanguageDetector
             return Language.TypeScript;
         if (lower.EndsWith("pom.xml") || lower.EndsWith("build.gradle") || lower.EndsWith("build.gradle.kts"))
             return Language.Java;
-        if (SqlExtensions.Any(lower.EndsWith))
+        if (PlSqlFileExtensions.All.Any(lower.EndsWith))
             return Language.Sql;
 
         if (!Directory.Exists(path)) return Language.CSharp;
@@ -320,7 +324,7 @@ public static class LanguageDetector
                 if (CsExtensions.Contains(ext)) counts[Language.CSharp]++;
                 else if (TsExtensions.Contains(ext)) counts[Language.TypeScript]++;
                 else if (JavaExtensions.Contains(ext)) counts[Language.Java]++;
-                else if (SqlExtensions.Contains(ext)) counts[Language.Sql]++;
+                else if (PlSqlFileExtensions.Contains(ext)) counts[Language.Sql]++;
             }
         }
         catch { /* best effort */ }

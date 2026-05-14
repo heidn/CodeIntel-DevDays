@@ -139,11 +139,11 @@ public class MetricsService : IMetricsService
             .ToList();
     }
 
-    private static bool HasMetricExtension(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    private static bool HasMetricExtension(string path)
     {
-        ".cs" or ".sql" or ".pkg" or ".pkb" or ".pks" or ".pls" => true,
-        _ => false,
-    };
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext == ".cs" || PlSqlFileExtensions.Contains(ext);
+    }
 
     private static bool IsMetricsSupported(Language language) => language switch
     {

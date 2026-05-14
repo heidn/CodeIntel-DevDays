@@ -310,17 +310,20 @@ public class PromptTemplateService : IPromptTemplateService
         return sb.ToString();
     }
 
-    private static string FileLang(string? path) =>
-        Path.GetExtension(path)?.ToLowerInvariant() switch
+    private static string FileLang(string? path)
+    {
+        var ext = Path.GetExtension(path)?.ToLowerInvariant();
+        if (ext is not null && PlSqlFileExtensions.Contains(ext)) return "sql";
+        return ext switch
         {
-            ".cs"                                   => "csharp",
-            ".sql" or ".pkb" or ".pkg" or ".pks" or ".pls" => "sql",
-            ".ts" or ".tsx"                         => "typescript",
-            ".js" or ".jsx"                         => "javascript",
-            ".py"                                   => "python",
-            ".java"                                 => "java",
-            _                                       => ""
+            ".cs"           => "csharp",
+            ".ts" or ".tsx" => "typescript",
+            ".js" or ".jsx" => "javascript",
+            ".py"           => "python",
+            ".java"         => "java",
+            _               => ""
         };
+    }
 
     private static string FormatChunkSuffix(FileContext file) =>
         file.ChunkStartLine is int start && file.ChunkEndLine is int end && file.ChunkTotalLines is int total

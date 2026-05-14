@@ -1,3 +1,5 @@
+using CodeIntel.Server.Models;
+
 namespace CodeIntel.Server.Services;
 
 /// <summary>
@@ -79,10 +81,10 @@ public static class FileChunker
     private static List<int> FindSeams(List<string> lines, string extension)
     {
         var ext = (extension ?? "").ToLowerInvariant();
+        if (PlSqlFileExtensions.Contains(ext)) return FindPlSqlSeams(lines);
         return ext switch
         {
             ".cs" or ".ts" or ".tsx" or ".js" or ".jsx" or ".java" => FindBraceSeams(lines),
-            ".sql" or ".pkb" or ".pkg" or ".pks" or ".pls" => FindPlSqlSeams(lines),
             _ => new List<int>(),
         };
     }

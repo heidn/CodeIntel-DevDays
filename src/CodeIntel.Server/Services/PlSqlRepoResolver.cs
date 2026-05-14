@@ -18,7 +18,6 @@ public interface IPlSqlRepoResolver
 /// </summary>
 public class PlSqlRepoResolver : IPlSqlRepoResolver
 {
-    private static readonly string[] SqlExtensions = [".sql", ".pkg", ".pkb", ".pks", ".pls"];
     private const int MaxFallbackFiles = 1500;
 
     private readonly IWorkspaceService _workspace;
@@ -49,7 +48,7 @@ public class PlSqlRepoResolver : IPlSqlRepoResolver
 
         var sqlFiles = ws.Projects
             .SelectMany(p => p.Files)
-            .Where(f => SqlExtensions.Any(e => f.AbsolutePath.EndsWith(e, StringComparison.OrdinalIgnoreCase)))
+            .Where(f => PlSqlFileExtensions.Matches(f.AbsolutePath))
             .ToList();
 
         if (sqlFiles.Count == 0) return null;

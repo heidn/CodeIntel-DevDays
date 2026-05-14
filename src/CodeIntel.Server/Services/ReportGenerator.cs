@@ -357,11 +357,13 @@ public class ReportGenerator : IReportGenerator
         _ => "Reference the call graph and per-node synopses above in Copilot Chat to dig deeper.",
     };
 
-    private static string CodeLang(string? filePath) =>
-        Path.GetExtension(filePath)?.ToLowerInvariant() switch
+    private static string CodeLang(string? filePath)
+    {
+        var ext = Path.GetExtension(filePath)?.ToLowerInvariant();
+        if (ext is not null && PlSqlFileExtensions.Contains(ext)) return "sql";
+        return ext switch
         {
             ".cs" => "csharp",
-            ".sql" or ".pkb" or ".pkg" or ".pks" or ".pls" => "sql",
             ".ts" or ".tsx" => "typescript",
             ".js" or ".jsx" => "javascript",
             ".py" => "python",
@@ -369,6 +371,7 @@ public class ReportGenerator : IReportGenerator
             ".java" => "java",
             _ => ""
         };
+    }
 
     private static string DescribeMode(AnalysisResult r) => r.Mode switch
     {

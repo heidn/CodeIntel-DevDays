@@ -17,7 +17,11 @@ interface Props {
   onNavigate?: (filePath: string, line: number) => void;
 }
 
-const DEFINITION_EXTS = ['.cs', '.ts', '.tsx', '.js', '.jsx', '.java', '.sql', '.pkg', '.pkb'];
+// SQL set mirrors PlSqlFileExtensions.All on the server.
+const DEFINITION_EXTS = [
+  '.cs', '.ts', '.tsx', '.js', '.jsx', '.java',
+  '.sql', '.pkg', '.pkb', '.pks', '.pls', '.tbl', '.trg', '.idx',
+];
 const supportsDefinition = (path: string) =>
   DEFINITION_EXTS.some((ext) => path.toLowerCase().endsWith(ext));
 

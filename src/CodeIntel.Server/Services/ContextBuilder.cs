@@ -30,8 +30,6 @@ public interface IContextBuilder
 
 public class ContextBuilder : IContextBuilder
 {
-    private static readonly string[] PlSqlExtensions = [".sql", ".pkg", ".pkb", ".pks", ".pls"];
-
     private readonly IWorkspaceService _workspace;
     private readonly IPlSqlObjectParser _plSqlParser;
     private readonly IPlSqlRepoResolver _plSqlResolver;
@@ -121,7 +119,7 @@ public class ContextBuilder : IContextBuilder
         // PL/SQL dependency resolution — if any seed file is SQL, parse it for object refs
         // and append their definitions from the same workspace as resolved-dependency files,
         // subject to the same token budget.
-        var sqlSeeds = files.Where(f => IsPlSqlExtension(f.RelativePath)).ToList();
+        var sqlSeeds = files.Where(f => PlSqlFileExtensions.Matches(f.RelativePath)).ToList();
         if (sqlSeeds.Count > 0 && !truncated)
         {
             var seedPaths = new HashSet<string>(
@@ -283,9 +281,6 @@ public class ContextBuilder : IContextBuilder
 
         return new CodeContext(files, totalTokens, ws.Language);
     }
-
-    private static bool IsPlSqlExtension(string path) =>
-        PlSqlExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
     private int EstimateTokens(string text) =>
         (int)Math.Ceiling(text.Length * _analysisOptions.TokensPerCharEstimate);

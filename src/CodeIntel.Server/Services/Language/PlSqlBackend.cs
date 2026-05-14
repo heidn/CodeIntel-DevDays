@@ -14,8 +14,6 @@ public sealed class PlSqlBackend : ILanguageBackend
 {
     public const string BackendId = "plsql";
 
-    private static readonly string[] SqlExtensions = [".sql", ".pkg", ".pkb"];
-
     private readonly IPlSqlRepoResolver _resolver;
     private readonly IPlSqlMetricsAnalyzer _metricsAnalyzer;
     private readonly ILogger<PlSqlBackend> _logger;
@@ -45,7 +43,7 @@ public sealed class PlSqlBackend : ILanguageBackend
         FileScanner.ScanAsync(
             path: path,
             language: Language.Sql,
-            extensions: SqlExtensions,
+            extensions: PlSqlFileExtensions.All,
             excludeDirs: [],
             excludePatterns: [],
             ct: ct);

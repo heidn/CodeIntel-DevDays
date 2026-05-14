@@ -2,6 +2,30 @@ namespace CodeIntel.Server.Models;
 
 public enum Language { CSharp, TypeScript, Java, Sql }
 
+/// <summary>
+/// File extensions recognized as PL/SQL across the workspace loader, file chunker,
+/// metrics, dependency resolver, and report generator. Single source of truth — add
+/// a new Oracle extension here and every consumer picks it up.
+/// </summary>
+public static class PlSqlFileExtensions
+{
+    /// <summary>
+    /// Lower-case, dot-prefixed. Covers Oracle source/DDL conventions: generic .sql,
+    /// package spec/body (.pks/.pkb/.pkg/.pls), tables (.tbl), triggers (.trg),
+    /// indexes (.idx).
+    /// </summary>
+    public static readonly IReadOnlyList<string> All =
+        [".sql", ".pkg", ".pkb", ".pks", ".pls", ".tbl", ".trg", ".idx"];
+
+    /// <summary>True if <paramref name="extension"/> (dot-prefixed) is a recognized PL/SQL extension.</summary>
+    public static bool Contains(string extension) =>
+        All.Contains(extension, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True if <paramref name="path"/>'s extension is a recognized PL/SQL extension.</summary>
+    public static bool Matches(string? path) =>
+        path is not null && Contains(Path.GetExtension(path));
+}
+
 public record Workspace(
     string Id,
     /// <summary>
